@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img alt="Release v1.3.0" src="https://img.shields.io/badge/release-v1.3.0-22d3ee?style=for-the-badge"></a>
+  <a href="https://github.com/PappyVanPoodle/anode/releases/latest"><img alt="Release v1.3.0" src="https://img.shields.io/badge/release-v1.3.0-22d3ee?style=for-the-badge"></a>
   <img alt="Compiler tests 617/617" src="https://img.shields.io/badge/compiler%20tests-617%2F617-22c55e?style=for-the-badge">
   <img alt="Stdlib tests 35/35" src="https://img.shields.io/badge/stdlib%20tests-35%2F35-22c55e?style=for-the-badge">
   <img alt="Bootstrap Stage-3 verified" src="https://img.shields.io/badge/bootstrap-stage--3%20verified-8b5cf6?style=for-the-badge">
@@ -204,7 +204,7 @@ Stats scan(const char *src, size_t len) {
 
 **Requirements:** Windows 10 or 11 (x64) and **Visual Studio 2022 Build Tools** with the C++ workload. Anode links executables with MSVC's `link.exe` and uses `cl.exe` for `--release`, `--sanitize` and the C backend.
 
-1. Download **[`anode-1.3.0-windows-x64.zip`](../../releases/latest/download/anode-1.3.0-windows-x64.zip)** from [Releases](../../releases/latest) and extract it, for example to `C:\Tools\anode-1.3.0-windows-x64`.
+1. Download **[`anode-1.3.0-windows-x64.zip`](https://github.com/PappyVanPoodle/anode/releases/latest/download/anode-1.3.0-windows-x64.zip)** from [Releases](https://github.com/PappyVanPoodle/anode/releases/latest) and extract it, for example to `C:\Tools\anode-1.3.0-windows-x64`.
 2. From that folder, run the per-user installer. It puts `bin\` on your user `PATH` and sets `ANODE_HOME`; nothing is copied and no administrator rights are needed (`-WhatIf` previews, `-Uninstall` reverts).
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\install.ps1
@@ -280,6 +280,10 @@ Created hello_anode
 {"checked_files":2,"elapsed_ms":1.9,"ok":true}
 ```
 
+## Third-party licenses
+
+The Windows SDK includes third-party components, including Cranelift and the Rust standard library. Their license terms and notices are in [THIRD-PARTY/README.txt](THIRD-PARTY/README.txt).
+
 ## Verified
 
 - **617 compiler tests** pass across 62 targets in the 1.3.0 release gate; the `anode new` scaffolding test added afterwards passes in its target.
@@ -293,10 +297,11 @@ README.md               this page
 AGENTS.md  CLAUDE.md    guides for AI coding agents (also written by `anode new`)
 install.ps1             per-user installer (ships inside the release zip next to bin\)
 assets/                 hero banner
+THIRD-PARTY/            notices for third-party components in the SDK
 docs/                   API-DOCS.md, BENCHMARK.md, LANGUAGE.md, SAFETY.md
 packages/               the eight standard-library packages
 examples/               stdlib-showcase
-site/                   GitHub Pages landing page (deployed by .github/workflows/pages.yml)
+site/                   GitHub Pages landing page (repository only)
 ```
 
 The compiler binaries (`anode.exe`, `zn.exe`, `anode-lsp.exe`) ship only in the release zip. Further reading: [docs/LANGUAGE.md](docs/LANGUAGE.md) (language reference by release) and [docs/SAFETY.md](docs/SAFETY.md) (safety boundary and capability model).
