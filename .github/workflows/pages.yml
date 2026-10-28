@@ -27,10 +27,6 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
-      # site/index.html links to OWNER/REPO; point them at this repository.
-      - name: Fill in repository links
-        run: sed -i "s#OWNER/REPO#${GITHUB_REPOSITORY}#g" site/index.html
-
       - name: Configure Pages
         uses: actions/configure-pages@v5
 

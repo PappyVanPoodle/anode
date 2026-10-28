@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Anode</title>
+  <rect width="512" height="512" rx="102" fill="#1C2124"/>
+  <g transform="translate(-49.647 -88.91) scale(1.20809)">
+    <path fill="#4F5F6E" d="M217 157 L282 157 L140 414 L75 414 Z"/>
+    <path fill="#343E48" d="M217 157 L250.6 214 L238 237 Z"/>
+    <path fill="#E94218" d="M218 157 L283 157 L431 414 L366 414 Z"/>
+    <path fill="#A8220A" d="M283 157 L250.6 214 L261.2 232 Z"/>
+    <path fill="#E94218" d="M237 286 L286 286 L254 338 L140 414 L190.3 323 Z"/>
+    <path fill="#A8250A" d="M237 286 L241 286 L140 414 L190.3 323 Z"/>
+    <path fill="#FFFFFF" d="M271 222 L311 222 L331 254.3 L351 222 L391 222 L350.7 287 L391 352 L351 352 L331 319.7 L311 352 L271 352 L311.3 287 Z"/>
+  </g>
+</svg>
