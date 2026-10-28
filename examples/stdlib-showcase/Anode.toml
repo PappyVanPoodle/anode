@@ -1,0 +1,26 @@
+[package]
+name = "stdlib-showcase"
+version = "0.1.0"
+
+[build]
+entry = "src/main.an"
+cache_mb = 1
+
+[dependencies]
+encoding = { path = "../../packages/encoding" }
+cli = { path = "../../packages/cli" }
+csv_jsonl = { path = "../../packages/csv_jsonl" }
+markdown = { path = "../../packages/markdown" }
+glob_regex = { path = "../../packages/glob_regex" }
+json = { path = "../../packages/json" }
+docgen = { path = "../../packages/docgen" }
+bench = { path = "../../packages/bench" }
+
+[capabilities]
+file_read = true
+file_write = true
+process_args = true
+process = false
+threads = true
+ffi = false
+net = true

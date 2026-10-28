@@ -1,0 +1,1189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anode 1.3 — Systems programming without lifetime noise</title>
+<meta name="description" content="Anode is a compiled systems language with scoped borrows instead of lifetimes, field views, @effect checking and requires/ensures contracts. Built for humans and AI agents.">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="Anode 1.3">
+<meta property="og:description" content="Systems programming without lifetime noise. Built for humans and AI agents.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-100 -100 200 200'%3E%3Cpolygon points='0,-92 79.7,-46 79.7,46 0,92 -79.7,46 -79.7,-46' fill='%230b1224' stroke='%2322d3ee' stroke-width='10'/%3E%3Cpolygon points='-34,-34 24,0 -34,34' fill='%2360a5fa'/%3E%3Cline x1='28' y1='-36' x2='28' y2='36' stroke='%23e0f2fe' stroke-width='12' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #070a12;
+    --bg-2: #0a0f1c;
+    --panel: #0d1424;
+    --panel-2: #111a2e;
+    --line: rgba(148, 163, 184, 0.14);
+    --line-2: rgba(148, 163, 184, 0.24);
+    --text: #e6edf7;
+    --muted: #9aa8bd;
+    --dim: #64748b;
+    --cyan: #22d3ee;
+    --blue: #60a5fa;
+    --violet: #a78bfa;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --pink: #f472b6;
+    --radius: 14px;
+    --sans: "Segoe UI", Inter, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    --mono: "Cascadia Code", "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", monospace;
+    --gutter: 16px;
+    --max: 1180px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  a { color: var(--cyan); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre, kbd { font-family: var(--mono); }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 var(--gutter); }
+  .bg-grid {
+    position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background-image:
+      radial-gradient(600px 380px at 12% 8%, rgba(34, 211, 238, 0.16), transparent 70%),
+      radial-gradient(640px 420px at 92% 0%, rgba(139, 92, 246, 0.17), transparent 70%),
+      linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+    background-size: auto, auto, 40px 40px, 40px 40px;
+    mask-image: linear-gradient(to bottom, #000 0%, #000 55%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 55%, transparent 100%);
+  }
+
+  /* ---------------- nav ---------------- */
+  .nav {
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(7, 10, 18, 0.72);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav .wrap { display: flex; align-items: center; gap: 24px; height: 60px; }
+  .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 750; letter-spacing: 0.08em; }
+  .brand:hover { text-decoration: none; }
+  .brand svg { width: 28px; height: 28px; }
+  .brand small { font-weight: 600; color: var(--dim); letter-spacing: 0; font-size: 13px; }
+  .nav nav { display: flex; gap: 20px; margin-left: auto; align-items: center; }
+  .nav nav a { color: var(--muted); font-size: 14.5px; }
+  .nav nav a:hover { color: var(--text); text-decoration: none; }
+  .nav .gh { border: 1px solid var(--line-2); padding: 6px 12px; border-radius: 999px; color: var(--text); }
+  @media (max-width: 760px) { .nav nav a.opt { display: none; } }
+
+  /* ---------------- hero ---------------- */
+  .hero { padding: 72px 0 40px; }
+  .hero-grid { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 48px; align-items: center; }
+  @media (max-width: 960px) { .hero-grid { grid-template-columns: 1fr; } .hero-art { display: none; } }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 5px 12px; border-radius: 999px;
+    border: 1px solid rgba(34, 211, 238, 0.35); background: rgba(34, 211, 238, 0.08);
+    color: #a5f3fc; font-size: 13px; font-weight: 600;
+  }
+  .eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
+  h1 {
+    font-size: clamp(38px, 6vw, 64px); line-height: 1.05; letter-spacing: -0.02em;
+    margin: 18px 0 16px; font-weight: 800;
+  }
+  h1 .grad {
+    background: linear-gradient(90deg, var(--cyan), var(--blue) 45%, var(--violet));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede { color: var(--muted); font-size: 18.5px; max-width: 620px; margin: 0 0 26px; }
+  .lede b { color: var(--text); font-weight: 600; }
+
+  .install {
+    border: 1px solid var(--line-2); border-radius: var(--radius);
+    background: linear-gradient(180deg, rgba(17, 26, 46, 0.92), rgba(13, 20, 36, 0.92));
+    overflow: hidden; max-width: 680px;
+    box-shadow: 0 20px 60px -30px rgba(34, 211, 238, 0.35);
+  }
+  .install-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line);
+    font-size: 12.5px; color: var(--dim);
+  }
+  .install-head .dots span { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; background: #334155; }
+  .install pre { margin: 0; padding: 14px 16px; font-size: 13.2px; line-height: 1.7; overflow-x: auto; color: #cbd5e1; }
+  .install pre .p { color: var(--dim); user-select: none; }
+  .install pre .cmd { color: #e2e8f0; }
+  .install pre .arg { color: #7dd3fc; }
+  .copy {
+    font: 600 12.5px var(--sans); color: var(--text); cursor: pointer;
+    background: rgba(148, 163, 184, 0.1); border: 1px solid var(--line-2);
+    padding: 5px 11px; border-radius: 8px;
+  }
+  .copy:hover { background: rgba(148, 163, 184, 0.18); }
+  .copy.done { color: var(--green); border-color: rgba(52, 211, 153, 0.5); }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    padding: 12px 20px; border-radius: 12px; font-weight: 700; font-size: 15.5px;
+    border: 1px solid transparent; transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .btn:hover { text-decoration: none; transform: translateY(-1px); }
+  .btn-primary {
+    color: #04121a; background: linear-gradient(90deg, var(--cyan), var(--blue));
+    box-shadow: 0 10px 30px -10px rgba(34, 211, 238, 0.65);
+  }
+  .btn-ghost { color: var(--text); border-color: var(--line-2); background: rgba(148, 163, 184, 0.06); }
+  .btn svg { width: 18px; height: 18px; }
+  .fine { color: var(--dim); font-size: 13px; margin-top: 12px; }
+
+  .hero-art { position: relative; }
+  .emblem { width: 100%; max-width: 420px; display: block; margin: 0 auto; filter: drop-shadow(0 0 40px rgba(34, 211, 238, 0.18)); }
+  .term-float {
+    position: absolute; left: 4%; right: 4%; bottom: -10px;
+    border: 1px solid var(--line-2); border-radius: 12px; background: rgba(9, 14, 26, 0.94);
+    padding: 12px 14px; font: 12.5px/1.6 var(--mono); color: #cbd5e1;
+    box-shadow: 0 24px 50px -24px rgba(0, 0, 0, 0.8);
+  }
+  .term-float .ok { color: var(--green); overflow-wrap: anywhere; }
+  .hero-grid > *, .features > *, .pkgs > *, .pkg-detail > *, .twocol > *, .steps > *, .cmp > *, .duo > * { min-width: 0; }
+  .term-float .p { color: var(--dim); }
+
+  .stats {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin-top: 56px;
+    background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  }
+  @media (max-width: 760px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  .stat { background: rgba(10, 15, 28, 0.92); padding: 22px 20px; }
+  .stat .n { font: 800 36px/1 var(--sans); letter-spacing: -0.02em; }
+  .stat .n small { font-size: 18px; color: var(--muted); font-weight: 700; margin-left: 4px; }
+  .stat .l { color: var(--muted); font-size: 14px; margin-top: 8px; }
+  .stat:nth-child(1) .n { color: #6ee7b7; }
+  .stat:nth-child(2) .n { color: #67e8f9; }
+  .stat:nth-child(3) .n { color: #93c5fd; }
+  .stat:nth-child(4) .n { color: #c4b5fd; }
+
+  /* ---------------- sections ---------------- */
+  section.block { padding: 84px 0 0; }
+  .kicker { color: var(--cyan); font: 700 12.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; }
+  h2 { font-size: clamp(28px, 4vw, 40px); line-height: 1.15; letter-spacing: -0.015em; margin: 10px 0 12px; }
+  .sub { color: var(--muted); max-width: 760px; margin: 0 0 32px; font-size: 17px; }
+
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 960px) { .features { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 620px) { .features { grid-template-columns: 1fr; } }
+  .feature {
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 20px 18px;
+    background: linear-gradient(180deg, rgba(17, 26, 46, 0.7), rgba(13, 20, 36, 0.55));
+  }
+  .feature h3 { margin: 0 0 6px; font-size: 17px; }
+  .feature p { margin: 0 0 12px; color: var(--muted); font-size: 14.5px; }
+  .feature code.snip {
+    display: block; font-size: 12.5px; color: #a5f3fc; background: rgba(2, 6, 23, 0.6);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; white-space: pre; overflow-x: auto;
+  }
+  .feature .ico {
+    width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; margin-bottom: 12px;
+    font: 800 15px var(--mono);
+  }
+
+  /* ---------------- tabs ---------------- */
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+  .tab {
+    font: 600 14.5px var(--sans); color: var(--muted); background: none; border: 0; cursor: pointer;
+    padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab:hover { color: var(--text); }
+  .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--cyan); }
+  .tab:focus-visible, .card:focus-visible, .copy:focus-visible, .btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .panel[hidden] { display: none; }
+  .panel-note { color: var(--muted); font-size: 14.5px; margin: 0 0 16px; max-width: 900px; }
+
+  .code {
+    border: 1px solid var(--line); border-radius: 12px; background: #080d19; overflow: hidden; min-width: 0;
+    display: flex; flex-direction: column;
+  }
+  .code-head {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line);
+    font-size: 13px; color: var(--muted); background: rgba(17, 26, 46, 0.6);
+  }
+  .code-head .lang { font: 700 12px var(--mono); padding: 2px 8px; border-radius: 6px; }
+  .code-head .copy { margin-left: auto; padding: 3px 9px; font-size: 12px; }
+  .lang-an { background: rgba(34, 211, 238, 0.14); color: #67e8f9; }
+  .lang-rs { background: rgba(251, 146, 60, 0.14); color: #fdba74; }
+  .lang-c { background: rgba(148, 163, 184, 0.16); color: #cbd5e1; }
+  .lang-sh { background: rgba(167, 139, 250, 0.16); color: #c4b5fd; }
+  .code pre { margin: 0; padding: 14px 16px; font-size: 12.8px; line-height: 1.62; overflow: auto; color: #d6deeb; tab-size: 4; flex: 1; }
+  .verdicts { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); }
+  .v { font-size: 12px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); }
+  .v.good { color: #6ee7b7; border-color: rgba(52, 211, 153, 0.4); }
+  .v.bad { color: #fca5a5; border-color: rgba(248, 113, 113, 0.4); }
+  .v.meh { color: #fcd34d; border-color: rgba(251, 191, 36, 0.4); }
+
+  .tk-k { color: #c792ea; }
+  .tk-t { color: #7fdbca; }
+  .tk-f { color: #82aaff; }
+  .tk-s { color: #c3e88d; }
+  .tk-n { color: #f78c6c; }
+  .tk-c { color: #637777; font-style: italic; }
+  .tk-a { color: #ffcb6b; }
+  .tk-l { color: #ff5370; font-weight: 700; background: rgba(255, 83, 112, 0.12); border-radius: 3px; }
+  .tk-ns { color: #89ddff; }
+  .tk-p { color: #64748b; }
+  .tk-ok { color: var(--green); }
+  .tk-err { color: #fca5a5; }
+
+  .cmp { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 14px; }
+  @media (max-width: 1080px) { .cmp { grid-template-columns: 1fr; } }
+  .cmp .code pre { max-height: 640px; }
+  .duo { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 14px; }
+  @media (max-width: 960px) { .duo { grid-template-columns: 1fr; } }
+  .stack { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .out pre { color: #a7f3d0; }
+  .diag pre { color: #fecaca; white-space: pre-wrap; word-break: break-word; }
+  #agent-term { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  /* ---------------- stdlib ---------------- */
+  .pkgs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+  @media (max-width: 960px) { .pkgs { grid-template-columns: repeat(2, 1fr); } }
+  .card {
+    text-align: left; cursor: pointer; color: var(--text); font: inherit;
+    border: 1px solid var(--line); border-radius: 12px; padding: 14px 14px 12px;
+    background: linear-gradient(180deg, rgba(17, 26, 46, 0.75), rgba(13, 20, 36, 0.6));
+    transition: border-color 0.15s ease, transform 0.15s ease;
+  }
+  .card:hover { border-color: var(--line-2); transform: translateY(-1px); }
+  .card[aria-pressed="true"] { border-color: rgba(34, 211, 238, 0.7); box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.35), 0 12px 30px -18px rgba(34, 211, 238, 0.7); }
+  .card .name { font: 700 15px var(--mono); color: #a5f3fc; }
+  .card .like { font-size: 12.5px; color: var(--dim); margin-left: 6px; }
+  .card .what { display: block; color: var(--muted); font-size: 13.5px; margin-top: 6px; line-height: 1.45; }
+  .card .count { display: inline-block; margin-top: 10px; font: 600 11.5px var(--mono); color: var(--dim); }
+  .pkg-detail { display: grid; grid-template-columns: 0.75fr 1.25fr; gap: 14px; }
+  @media (max-width: 960px) { .pkg-detail { grid-template-columns: 1fr; } }
+  .pkg-info { border: 1px solid var(--line); border-radius: 12px; padding: 18px; background: rgba(13, 20, 36, 0.7); }
+  .pkg-info h3 { margin: 0 0 4px; font: 700 20px var(--mono); color: #a5f3fc; }
+  .pkg-info p { color: var(--muted); font-size: 14.5px; margin: 6px 0 14px; }
+  .fns { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+  .fns li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+  .fns code { color: #e2e8f0; font-size: 13px; }
+  .eff { font: 600 10.5px var(--mono); padding: 1px 6px; border-radius: 5px; }
+  .eff-na { background: rgba(52, 211, 153, 0.14); color: #6ee7b7; }
+  .eff-ni { background: rgba(96, 165, 250, 0.14); color: #93c5fd; }
+  .eff-b { background: rgba(167, 139, 250, 0.16); color: #c4b5fd; }
+  .pkg-links { margin-top: 16px; font-size: 13.5px; display: flex; gap: 14px; flex-wrap: wrap; }
+
+  /* ---------------- bench + arch ---------------- */
+  .twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 960px) { .twocol { grid-template-columns: 1fr; } }
+  .box { border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; background: rgba(13, 20, 36, 0.7); min-width: 0; }
+  .box h3 { margin: 0 0 4px; font-size: 18px; }
+  .box .muted { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+  .bars { display: flex; flex-direction: column; gap: 14px; }
+  .bar .row { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; }
+  .bar .row code { color: #e2e8f0; font-size: 12.8px; }
+  .bar .row b { font: 700 13px var(--mono); color: var(--text); white-space: nowrap; }
+  .bar .track { height: 8px; border-radius: 99px; background: rgba(148, 163, 184, 0.12); margin-top: 6px; overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--cyan), var(--violet)); width: 0; transition: width 1.1s cubic-bezier(.2, .7, .2, 1); }
+  .bar .meta { color: var(--dim); font-size: 12px; margin-top: 4px; }
+  table.t { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 16px; }
+  table.t th, table.t td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  table.t th { color: var(--dim); font-weight: 600; font-size: 12.5px; }
+  table.t td.num { font-family: var(--mono); text-align: right; }
+  table.t th.num { text-align: right; }
+
+  .arch { display: flex; flex-direction: column; gap: 10px; }
+  .arch .stage {
+    border: 1px solid var(--line-2); border-radius: 11px; padding: 10px 14px; background: rgba(2, 6, 23, 0.55);
+  }
+  .arch .stage b { display: block; font-size: 14px; }
+  .arch .stage span { color: var(--muted); font-size: 13px; }
+  .arch .arrow { text-align: center; color: var(--dim); font-size: 14px; line-height: 1; }
+  .arch .split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .arch .s-front { border-color: rgba(34, 211, 238, 0.45); }
+  .arch .s-check { border-color: rgba(96, 165, 250, 0.45); }
+  .arch .s-native { border-color: rgba(52, 211, 153, 0.45); }
+  .arch .s-c { border-color: rgba(251, 191, 36, 0.45); }
+  .arch .side { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .arch .side span { font: 600 12px var(--mono); color: var(--muted); border: 1px dashed var(--line-2); padding: 4px 8px; border-radius: 8px; }
+
+  /* ---------------- quickstart + footer ---------------- */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; counter-reset: s; }
+  @media (max-width: 860px) { .steps { grid-template-columns: 1fr; } }
+  .step { border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; background: rgba(13, 20, 36, 0.7); min-width: 0; }
+  .step::before {
+    counter-increment: s; content: counter(s);
+    display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+    background: rgba(34, 211, 238, 0.14); color: #67e8f9; font: 800 14px var(--mono); margin-bottom: 10px;
+  }
+  .step h3 { margin: 0 0 6px; font-size: 16.5px; }
+  .step p { color: var(--muted); font-size: 14px; margin: 0 0 10px; }
+  .step pre { margin: 0; font-size: 12.5px; background: #080d19; border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; overflow-x: auto; color: #cbd5e1; }
+  footer { margin-top: 96px; border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--dim); font-size: 14px; }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; justify-content: space-between; }
+  footer nav { display: flex; gap: 18px; flex-wrap: wrap; }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="bg-grid" aria-hidden="true"></div>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="Anode home">
+      <svg viewBox="-100 -100 200 200" aria-hidden="true"><defs><linearGradient id="nb" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs><polygon points="0,-92 79.7,-46 79.7,46 0,92 -79.7,46 -79.7,-46" fill="#0b1224" stroke="url(#nb)" stroke-width="9"/><polygon points="-34,-34 24,0 -34,34" fill="url(#nb)"/><line x1="28" y1="-36" x2="28" y2="36" stroke="#e0f2fe" stroke-width="11" stroke-linecap="round"/></svg>
+      ANODE <small>1.3.0</small>
+    </a>
+    <nav aria-label="Main">
+      <a class="opt" href="#why">Why</a>
+      <a class="opt" href="#code">Code</a>
+      <a class="opt" href="#stdlib">Stdlib</a>
+      <a class="opt" href="#bench">Benchmarks</a>
+      <a class="opt" href="https://github.com/OWNER/REPO/blob/main/AGENTS.md">Docs</a>
+      <a class="gh" href="https://github.com/OWNER/REPO">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <!-- ================= HERO ================= -->
+  <section class="hero">
+    <div class="wrap">
+      <div class="hero-grid">
+        <div>
+          <span class="eyebrow"><span class="dot"></span>Anode 1.3.0 · Windows x64 · 617 compiler tests passing</span>
+          <h1>Systems programming<br><span class="grad">without lifetime noise.</span></h1>
+          <p class="lede">Scoped borrows instead of <code>'a</code>. <b>Field views</b>, <b><code>@effect(no_alloc, no_io, bounded)</code></b> and <b><code>requires</code> / <code>ensures</code></b> checked in milliseconds, then native code through Cranelift or optimized C. Built for humans and AI agents.</p>
+
+          <div class="install" role="group" aria-label="PowerShell install">
+            <div class="install-head">
+              <span class="dots" aria-hidden="true"><span></span><span></span><span></span></span>
+              <span>PowerShell · per-user, no admin</span>
+              <button class="copy" type="button" data-copy="install-cmd">Copy</button>
+            </div>
+<pre id="install-cmd"><span class="p">PS&gt; </span><span class="cmd">iwr</span> <span class="arg">https://github.com/OWNER/REPO/releases/latest/download/anode-1.3.0-windows-x64.zip</span> -OutFile anode.zip
+<span class="p">PS&gt; </span><span class="cmd">Expand-Archive</span> anode.zip <span class="arg">"$env:LOCALAPPDATA\Programs"</span> -Force
+<span class="p">PS&gt; </span><span class="cmd">powershell</span> -ExecutionPolicy Bypass -File <span class="arg">"$env:LOCALAPPDATA\Programs\anode-1.3.0-windows-x64\install.ps1"</span>
+<span class="p">PS&gt; </span><span class="cmd">anode</span> new hello_anode</pre>
+          </div>
+
+          <div class="cta">
+            <a class="btn btn-primary" href="https://github.com/OWNER/REPO/releases/latest/download/anode-1.3.0-windows-x64.zip">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+              Download Anode 1.3.0 SDK (.zip)
+            </a>
+            <a class="btn btn-ghost" href="https://github.com/OWNER/REPO">View on GitHub</a>
+          </div>
+          <p class="fine">8.1 MB · compiler, language server, 8 stdlib packages, docs and a runnable showcase. Needs Visual Studio 2022 Build Tools (C++) for linking.</p>
+        </div>
+
+        <div class="hero-art" aria-hidden="true">
+          <svg class="emblem" viewBox="-200 -170 400 340">
+            <defs>
+              <linearGradient id="ea" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="0.5" stop-color="#60a5fa"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+              <radialGradient id="eg" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#22d3ee" stop-opacity="0.22"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient>
+            </defs>
+            <circle r="190" fill="url(#eg)"/>
+            <polygon points="0,-150 129.9,-75 129.9,75 0,150 -129.9,75 -129.9,-75" fill="#0b1224" stroke="url(#ea)" stroke-width="4"/>
+            <polygon points="0,-115 99.6,-57.5 99.6,57.5 0,115 -99.6,57.5 -99.6,-57.5" fill="none" stroke="#60a5fa" stroke-opacity="0.28" stroke-width="2"/>
+            <line x1="-95" y1="0" x2="-48" y2="0" stroke="#7dd3fc" stroke-width="7" stroke-linecap="round"/>
+            <polygon points="-48,-50 36,0 -48,50" fill="url(#ea)"/>
+            <line x1="40" y1="-54" x2="40" y2="54" stroke="#e0f2fe" stroke-width="10" stroke-linecap="round"/>
+            <line x1="40" y1="0" x2="92" y2="0" stroke="#a78bfa" stroke-width="7" stroke-linecap="round"/>
+            <circle cx="0" cy="-150" r="6" fill="#22d3ee"/><circle cx="129.9" cy="75" r="6" fill="#60a5fa"/><circle cx="-129.9" cy="75" r="6" fill="#a78bfa"/>
+          </svg>
+          <div class="term-float"><span class="p">&gt;</span> anode check . --json<br><span class="ok">{"checked_files":9,"elapsed_ms":22.97,"ok":true}</span><br><span class="p">&gt;</span> anode test . --jobs 4<br><span class="ok">35 tests passed</span></div>
+        </div>
+      </div>
+
+      <div class="stats" role="list">
+        <div class="stat" role="listitem"><div class="n" data-count="617">617</div><div class="l">compiler tests in the 1.3.0 release gate</div></div>
+        <div class="stat" role="listitem"><div class="n" data-count="35">35</div><div class="l">stdlib + showcase tests, all passing</div></div>
+        <div class="stat" role="listitem"><div class="n" data-count="117">117</div><div class="l">built-in functions in the compiler's table</div></div>
+        <div class="stat" role="listitem"><div class="n"><span data-count="23">23</span><small>ms</small></div><div class="l">to check the 9-file showcase (0.27 s edit → 35 tests)</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= WHY ================= -->
+  <section class="block" id="why">
+    <div class="wrap">
+      <div class="kicker">Why Anode</div>
+      <h2>The checks you want, without the annotations you don't.</h2>
+      <p class="sub">Anode keeps Rust's ownership discipline but replaces lifetimes with lexically scoped borrows, so views can never escape. Every function can state what it touches, what it may do and what it promises — and the compiler holds it to that.</p>
+      <div class="features">
+        <div class="feature">
+          <div class="ico" style="background:rgba(34,211,238,.14);color:#67e8f9">.{}</div>
+          <h3>Partial field views</h3>
+          <p>A function names the fields it may read or write. Callers keep using disjoint fields while it runs.</p>
+          <code class="snip">c: &amp;mut Counter.{ mut value, step }</code>
+        </div>
+        <div class="feature">
+          <div class="ico" style="background:rgba(52,211,153,.14);color:#6ee7b7">@</div>
+          <h3>Compile-time effects</h3>
+          <p>No heap, no I/O, provably finite loops — checked transitively through every call, including packages.</p>
+          <code class="snip">@effect(no_alloc, no_io, bounded)</code>
+        </div>
+        <div class="feature">
+          <div class="ico" style="background:rgba(96,165,250,.14);color:#93c5fd">⊢</div>
+          <h3>Contracts</h3>
+          <p>Pre- and postconditions run on every call in every build mode; <code>anode verify</code> samples them in RAM.</p>
+          <code class="snip">requires c.step &gt; 0;  ensures result &gt; 0;</code>
+        </div>
+        <div class="feature">
+          <div class="ico" style="background:rgba(167,139,250,.16);color:#c4b5fd">id</div>
+          <h3>Generational arenas &amp; SoA</h3>
+          <p>Graphs and trees use handles that detect staleness; columnar vectors store one contiguous array per field.</p>
+          <code class="snip">pub arena Nodes(Node);  pub soa vector Rows(Row);</code>
+        </div>
+        <div class="feature">
+          <div class="ico" style="background:rgba(251,191,36,.14);color:#fcd34d">⇉</div>
+          <h3>Two native backends</h3>
+          <p>Cranelift for fast builds; C through MSVC <code>/O2</code> for releases, with optional AddressSanitizer.</p>
+          <code class="snip">anode run .   anode build . --release</code>
+        </div>
+        <div class="feature">
+          <div class="ico" style="background:rgba(244,114,182,.14);color:#f9a8d4">AI</div>
+          <h3>AI-native from <code>anode new</code></h3>
+          <p><code>AGENTS.md</code> and <code>CLAUDE.md</code> are baked into the binary and written into every project. Diagnostics come back as JSON.</p>
+          <code class="snip">anode check . --json</code>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CODE TABS ================= -->
+  <section class="block" id="code">
+    <div class="wrap">
+      <div class="kicker">See it</div>
+      <h2>Real code, real compiler output.</h2>
+      <p class="sub">Every snippet below was compiled with Anode 1.3.0; every diagnostic is what the compiler actually printed (file paths shortened).</p>
+
+      <div class="tabs" role="tablist" aria-label="Code examples">
+        <button class="tab" role="tab" id="tab-cmp" aria-controls="panel-cmp" aria-selected="true">C vs Rust vs Anode</button>
+        <button class="tab" role="tab" id="tab-views" aria-controls="panel-views" aria-selected="false" tabindex="-1">Field views &amp; contracts</button>
+        <button class="tab" role="tab" id="tab-arena" aria-controls="panel-arena" aria-selected="false" tabindex="-1">Arena &amp; JSON query</button>
+        <button class="tab" role="tab" id="tab-agent" aria-controls="panel-agent" aria-selected="false" tabindex="-1">AI agent loop</button>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-cmp" aria-labelledby="tab-cmp">
+        <p class="panel-note">One task: scan <code>label|amount</code> lines, skip blank and <code>#</code> lines, count rows, the total and malformed lines. All three compile (MSVC <code>/W4</code>, <code>rustc</code> 2021, <code>anode check</code>) and print <code>2 10 1</code> for <code>"# c\nalpha|12\nbad\nb|-2\n"</code>.</p>
+        <div class="cmp">
+          <div class="code">
+            <div class="code-head"><span class="lang lang-an">Anode</span> scan.an <button class="copy" type="button" data-copy-src="src-cmp-anode">Copy</button></div>
+            <pre data-src="src-cmp-anode" data-lang="anode"></pre>
+            <div class="verdicts"><span class="v good">bounds-checked views</span><span class="v good">no lifetimes</span><span class="v good">effects in the signature</span><span class="v good">requires / ensures</span><span class="v good">overflow faults</span></div>
+          </div>
+          <div class="code">
+            <div class="code-head"><span class="lang lang-rs">Rust</span> scan.rs <button class="copy" type="button" data-copy-src="src-cmp-rust">Copy</button></div>
+            <pre data-src="src-cmp-rust" data-lang="rust"></pre>
+            <div class="verdicts"><span class="v good">memory-safe</span><span class="v meh">&lt;'a&gt; on struct + fn</span><span class="v bad">no effect contract</span><span class="v meh">overflow wraps in release</span></div>
+          </div>
+          <div class="code">
+            <div class="code-head"><span class="lang lang-c">C</span> scan.c <button class="copy" type="button" data-copy-src="src-cmp-c">Copy</button></div>
+            <pre data-src="src-cmp-c" data-lang="c"></pre>
+            <div class="verdicts"><span class="v bad">buffer sizes by hand</span><span class="v bad">lengths unchecked</span><span class="v bad">signed overflow is UB</span><span class="v meh">strtol clamps silently</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-views" aria-labelledby="tab-views" hidden>
+        <p class="panel-note"><code>advance</code> may write <code>value</code> and read <code>step</code> — nothing else in <code>Counter</code>. <code>rename</code> borrows only <code>label</code>. The contract is the signature: break it and <code>anode check</code> names the function and the field.</p>
+        <div class="duo">
+          <div class="code">
+            <div class="code-head"><span class="lang lang-an">Anode</span> src/main.an <button class="copy" type="button" data-copy-src="src-views">Copy</button></div>
+            <pre data-src="src-views" data-lang="anode"></pre>
+          </div>
+          <div class="stack">
+            <div class="code out">
+              <div class="code-head"><span class="lang lang-sh">anode run .</span></div>
+              <pre>steps = 3</pre>
+            </div>
+            <div class="code diag">
+              <div class="code-head"><span class="lang lang-sh">add <code>c.label = "oops";</code> to advance</span></div>
+              <pre>{"diagnostics":[{"file":"src\\main.an","line":9,
+  "message":"view contract for m0_advance.c does not permit
+  mutation at field path [2]; narrow the helper call or
+  declare that field","severity":"error"}],"ok":false}</pre>
+            </div>
+            <div class="code diag">
+              <div class="code-head"><span class="lang lang-sh">add <code>print c.value;</code> to advance</span></div>
+              <pre>{"diagnostics":[{"file":"src\\main.an","line":9,
+  "message":"effect contract no_alloc violated in m0_advance
+  (including transitive calls)","severity":"error"}],"ok":false}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-arena" aria-labelledby="tab-arena" hidden>
+        <p class="panel-note">Arenas hand out generational <code>id(Nodes)</code> handles: freeing a node bumps its slot's generation, so an old handle is detected as stale instead of dangling. The <code>json</code> package parses into exactly such an arena and answers dotted path queries.</p>
+        <div class="duo">
+          <div class="code">
+            <div class="code-head"><span class="lang lang-an">Anode</span> src/main.an <button class="copy" type="button" data-copy-src="src-arena">Copy</button></div>
+            <pre data-src="src-arena" data-lang="anode"></pre>
+          </div>
+          <div class="stack">
+            <div class="code out">
+              <div class="code-head"><span class="lang lang-sh">anode run .</span></div>
+              <pre>1
+128
+{"service":"ghosthand","routes":["/health","/v1/run"],"limits":{"depth":128}}</pre>
+            </div>
+            <div class="code">
+              <div class="code-head"><span class="lang lang-sh">Anode.toml</span></div>
+              <pre data-lang="toml" data-src="src-arena-toml"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-agent" aria-labelledby="tab-agent" hidden>
+        <p class="panel-note">A real session. The agent writes a Rust-ism, <code>anode check --json</code> rejects it in under 2 ms, the agent applies rule 3 of <code>AGENTS.md</code> §2.2 and the project passes.</p>
+        <div class="code">
+          <div class="code-head"><span class="lang lang-sh">PowerShell</span> anode new → AGENTS.md → anode check --json</div>
+          <pre id="agent-term"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= STDLIB ================= -->
+  <section class="block" id="stdlib">
+    <div class="wrap">
+      <div class="kicker">Standard library</div>
+      <h2>Eight packages, written in pure <code>.an</code>.</h2>
+      <p class="sub">Every capability is switched off: no files, processes or network. Import them as path dependencies and read the full reference in <a href="https://github.com/OWNER/REPO/blob/main/docs/API-DOCS.md">API-DOCS.md</a> — generated by <code>docgen</code> itself.</p>
+      <div class="pkgs" id="pkgs" role="group" aria-label="Packages"></div>
+      <div class="pkg-detail">
+        <div class="pkg-info" id="pkg-info" aria-live="polite"></div>
+        <div class="stack">
+          <div class="code">
+            <div class="code-head"><span class="lang lang-an">Anode</span> <span id="pkg-file">usage</span> <button class="copy" type="button" id="pkg-copy">Copy</button></div>
+            <pre id="pkg-code"></pre>
+          </div>
+          <div class="code out">
+            <div class="code-head"><span class="lang lang-sh">output</span></div>
+            <pre id="pkg-out"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= BENCH + ARCH ================= -->
+  <section class="block" id="bench">
+    <div class="wrap">
+      <div class="kicker">Benchmarks &amp; architecture</div>
+      <h2>Fast loops, honest numbers.</h2>
+      <p class="sub">Measured on the development machine with the fast native build. <code>monotonic_ms()</code> ticks every 15 ms there, so library timings are batch medians and rough; see <a href="https://github.com/OWNER/REPO/blob/main/docs/BENCHMARK.md">BENCHMARK.md</a>.</p>
+      <div class="twocol">
+        <div class="box">
+          <h3>Developer loop</h3>
+          <p class="muted">The 9-file stdlib showcase (root + 8 packages).</p>
+          <div class="bars">
+            <div class="bar"><div class="row"><code>anode check . --json</code><b>23 ms</b></div><div class="track"><div class="fill" data-w="7"></div></div><div class="meta">types, ownership, borrows, views, effects, capabilities</div></div>
+            <div class="bar"><div class="row"><code>anode test . --jobs 4</code> (unchanged)<b>~150 ms</b></div><div class="track"><div class="fill" data-w="44"></div></div><div class="meta">35 tests; the test binary is reused</div></div>
+            <div class="bar"><div class="row"><code>anode test . --jobs 4</code> (after an edit)<b>~270 ms</b></div><div class="track"><div class="fill" data-w="79"></div></div><div class="meta">rebuild + run 35 tests</div></div>
+            <div class="bar"><div class="row"><code>anode test . --jobs 4</code> (cold)<b>~340 ms</b></div><div class="track"><div class="fill" data-w="100"></div></div><div class="meta">all 9 modules compiled from scratch</div></div>
+          </div>
+          <table class="t" aria-label="Standard library microbenchmarks">
+            <thead><tr><th>Workload (bench package)</th><th class="num">Batch</th><th class="num">Median</th><th class="num">Per run</th></tr></thead>
+            <tbody>
+              <tr><td><code>encoding::crc32_text</code> 3.5 KB</td><td class="num">256</td><td class="num">16 ms</td><td class="num">~62 µs</td></tr>
+              <tr><td><code>glob_regex::glob_match</code> 8 paths</td><td class="num">32,768</td><td class="num">16 ms</td><td class="num">~0.5 µs</td></tr>
+              <tr><td><code>json::parse_json</code> 261 B</td><td class="num">8,192</td><td class="num">31 ms</td><td class="num">~3.8 µs</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="box">
+          <h3>Compiler architecture</h3>
+          <p class="muted">One checked IR, two code generators. Nothing is emitted until every check passes.</p>
+          <div class="arch">
+            <div class="stage s-front"><b>Frontend</b><span>parse · modules · <code>[dependencies]</code> packages · capability manifests</span></div>
+            <div class="arrow">↓</div>
+            <div class="stage s-check"><b>Checker</b><span>types · ownership &amp; moves · scoped borrows · field views · <code>@effect</code> · contracts</span></div>
+            <div class="arrow">↓</div>
+            <div class="stage"><b>Checked IR</b><span>bounds, overflow and contract checks stay in; proven ones are removed</span></div>
+            <div class="arrow">↓</div>
+            <div class="split">
+              <div class="stage s-native"><b>Cranelift → COFF</b><span>default · <code>anode run</code>, <code>test</code>, <code>build</code></span></div>
+              <div class="stage s-c"><b>C → MSVC</b><span><code>--release</code> (/O2) · <code>--sanitize</code> (ASan) · <code>--lib</code></span></div>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="stage"><b>link.exe → native .exe</b><span>Windows x64; optional cached objects (<code>cache_mb</code>)</span></div>
+            <div class="side"><span>anode verify (contracts in RAM)</span><span>anode agent (JSON Lines)</span><span>?? holes + --campaign</span><span>anode-lsp</span><span>anode fmt</span></div>
+            <p class="muted" style="margin:10px 0 0">Bootstrap: the Anode-written frontend's Stage 1, 2 and 3 emit byte-identical C (796,798 bytes).</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= QUICKSTART ================= -->
+  <section class="block" id="start">
+    <div class="wrap">
+      <div class="kicker">Get started</div>
+      <h2>From zip to running binary in three steps.</h2>
+      <div class="steps">
+        <div class="step">
+          <h3>Download &amp; extract</h3>
+          <p>Grab the SDK from Releases and extract it anywhere.</p>
+          <pre><a href="https://github.com/OWNER/REPO/releases/latest/download/anode-1.3.0-windows-x64.zip">anode-1.3.0-windows-x64.zip</a></pre>
+        </div>
+        <div class="step">
+          <h3>Install for your user</h3>
+          <p>Adds <code>bin\</code> to PATH and sets <code>ANODE_HOME</code>. <code>-WhatIf</code> previews; <code>-Uninstall</code> reverts.</p>
+          <pre>powershell -ExecutionPolicy Bypass -File .\install.ps1</pre>
+        </div>
+        <div class="step">
+          <h3>Create &amp; run</h3>
+          <p>New projects include <code>AGENTS.md</code> and <code>CLAUDE.md</code>.</p>
+          <pre>anode new hello_anode
+cd hello_anode
+anode run .</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Anode 1.3.0 · Windows x64</span>
+    <nav aria-label="Footer">
+      <a href="https://github.com/OWNER/REPO">GitHub</a>
+      <a href="https://github.com/OWNER/REPO/releases/latest">Releases</a>
+      <a href="https://github.com/OWNER/REPO/blob/main/AGENTS.md">AGENTS.md</a>
+      <a href="https://github.com/OWNER/REPO/blob/main/docs/LANGUAGE.md">Language reference</a>
+      <a href="https://github.com/OWNER/REPO/blob/main/docs/SAFETY.md">Safety model</a>
+    </nav>
+  </div>
+</footer>
+
+<!-- ================= CODE SOURCES (raw text, highlighted at load) ================= -->
+<script type="text/plain" id="src-cmp-anode">
+pub struct Stats {
+    rows: int,
+    total: int,
+    errors: int
+}
+// Folds one "label|amount" line into `s`: no heap, no I/O, always finishes.
+@effect(no_alloc, no_io, bounded)
+fn add_line(line: &str, s: &mut Stats.{ mut rows, mut total, mut errors }) {
+    for i in 0..len(line) {
+        if byte_at(line, i) == 124 {
+            borrow digits = region(line, i + 1, len(line)) {
+                if i > 0 && is_int(digits) {
+                    s.rows = s.rows + 1;
+                    s.total = s.total + parse_int(digits);
+                    return;
+                }
+            }
+            break;
+        }
+    }
+    s.errors = s.errors + 1;
+}
+@effect(no_alloc, no_io, bounded)
+pub fn scan(src: &str) -> Stats requires len(src) <= 16777216;
+ensures result.rows + result.errors <= len(src);
+{
+    let mut s = Stats { rows: 0, total: 0, errors: 0 };
+    let mut start = 0;
+    for i in 0..len(src) + 1 {
+        if i == len(src) || byte_at(src, i) == 10 {
+            if i > start && byte_at(src, start) != 35 {
+                borrow line = region(src, start, i) {
+                    add_line(&line, &mut s);
+                }
+            }
+            start = i + 1;
+        }
+    }
+    return s;
+}
+</script>
+<script type="text/plain" id="src-cmp-rust">
+#[derive(Debug, Default)]
+pub struct Stats {
+    pub rows: u64,
+    pub total: i64,
+    pub errors: u64,
+}
+
+/// A parsed row borrows its label from the line, so the struct
+/// and the function both carry the lifetime `'a`.
+pub struct Entry<'a> {
+    pub label: &'a str,
+    pub amount: i64,
+}
+
+pub fn parse<'a>(line: &'a str) -> Option<Entry<'a>> {
+    let (label, digits) = line.split_once('|')?;
+    if label.is_empty() {
+        return None;
+    }
+    let amount = digits.parse::<i64>().ok()?;
+    Some(Entry { label, amount })
+}
+
+pub fn scan(src: &str) -> Stats {
+    let mut s = Stats::default();
+    for line in src.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        match parse(line) {
+            Some(entry) => {
+                s.rows += 1;
+                s.total += entry.amount;
+            }
+            None => s.errors += 1,
+        }
+    }
+    s
+}
+</script>
+<script type="text/plain" id="src-cmp-c">
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct { long rows, total, errors; } Stats;
+
+/* Caller must pass the true length of `line`; nothing checks it. */
+static int parse_amount(const char *line, size_t len, long *amount) {
+    const char *bar = memchr(line, '|', len);
+    if (!bar || bar == line) return 0;
+    char digits[32];                          /* fixed buffer: size checked by hand */
+    size_t n = len - (size_t)(bar + 1 - line);
+    if (n == 0 || n >= sizeof digits) return 0;
+    memcpy(digits, bar + 1, n);
+    digits[n] = '\0';
+    char *end;
+    *amount = strtol(digits, &end, 10);       /* out-of-range input silently clamps */
+    return *end == '\0';
+}
+
+Stats scan(const char *src, size_t len) {
+    Stats s = {0, 0, 0};
+    size_t start = 0;
+    for (size_t i = 0; i <= len; i++) {
+        if (i == len || src[i] == '\n') {
+            if (i > start && src[start] != '#') {
+                long amount;
+                if (parse_amount(src + start, i - start, &amount)) {
+                    s.rows++;
+                    s.total += amount;        /* signed overflow is undefined */
+                } else {
+                    s.errors++;
+                }
+            }
+            start = i + 1;
+        }
+    }
+    return s;
+}
+</script>
+<script type="text/plain" id="src-views">
+pub struct Counter {
+    value: int,
+    step: int,
+    label: text
+}
+// May read `step` and write `value`; nothing else in Counter is reachable.
+@effect(no_alloc, no_io, bounded)
+pub fn advance(c: &mut Counter.{ mut value, step }) -> int requires c.step > 0 && c.value >= 0;
+ensures result > 0;
+{
+    c.value = c.value + c.step;
+    return c.value;
+}
+// Disjoint views: `label` stays usable while `value`/`step` are borrowed.
+pub fn rename(c: &mut Counter.{ mut label }, name: text) {
+    c.label = name;
+}
+fn main() {
+    let mut c = Counter { value: 0, step: 3, label: "ticks" };
+    let v = advance(&mut c);
+    rename(&mut c, "steps");
+    print concat(concat(c.label, " = "), int_text(v));
+}
+</script>
+<script type="text/plain" id="src-arena">
+pub struct Node {
+    name: text,
+    parent: int
+}
+pub arena Nodes(Node);
+fn demo_arena() {
+    let mut nodes = Nodes();
+    let root = alloc(nodes, Node { name: "root", parent: -1 });
+    let leaf = alloc(nodes, Node { name: "leaf", parent: 0 });
+    borrow mut n = get(nodes, leaf) {
+        n.name = "renamed";
+    }
+    let freed = free(nodes, leaf); // the slot's generation is bumped
+    let stale = contains_id(nodes, leaf); // false: the old handle is dead
+    let alive = contains_id(nodes, root); // true
+    assert freed && !stale && alive;
+    print len(nodes); // 1
+}
+fn demo_json_query() {
+    let src = "{\"service\":\"ghosthand\",\"routes\":[\"/health\",\"/v1/run\"],\"limits\":{\"depth\":128}}";
+    let path = "limits.depth";
+    borrow s = region(src, 0, len(src)) {
+        match json::parse_json(&s) {
+            json::JsonParse::Ok(doc) => {
+                borrow p = region(path, 0, len(path)) {
+                    print json::node_int(&doc, json::query_path(&doc, &p)); // 128
+                }
+                print json::render_json(&doc); // compact round-trip
+            }
+            json::JsonParse::Err(message) => {
+                print message;
+            }
+        }
+    }
+}
+fn main() {
+    demo_arena();
+    demo_json_query();
+}
+</script>
+<script type="text/plain" id="src-arena-toml">
+[dependencies]
+json = { path = "../packages/json" }
+</script>
+<script type="text/plain" id="pkg-cli">
+let raw = ["build", "--release", "--target=x86_64", "-v", "src/main.an"];
+let args = cli::parse_args(&raw);
+let key = "target";
+let fallback = "native";
+borrow k = region(key, 0, len(key)) {
+    borrow f = region(fallback, 0, len(fallback)) {
+        print cli::flag_value_or(&args, &k, &f); // x86_64
+    }
+}
+print args.subcommand; // build
+</script>
+<script type="text/plain" id="pkg-encoding">
+let msg = "123456789";
+borrow v = region(msg, 0, len(msg)) {
+    let crc = encoding::crc32_text(&v); // 0xCBF43926, no heap
+    assert crc == u32(3421780262);
+    print encoding::base64_encode_text(&v); // MTIzNDU2Nzg5
+}
+let mut out = [u8(0); 16];
+let b64 = "Zm9vYmFy";
+borrow src = region(b64, 0, len(b64)) {
+    borrow mut dst = region(out, 0, 16) {
+        print encoding::try_base64_decode_into(&src, &mut dst); // 6 bytes written
+    }
+}
+</script>
+<script type="text/plain" id="pkg-csv_jsonl">
+let row = "id,\"name, full\",\"say \"\"hi\"\"\"";
+borrow r = region(row, 0, len(row)) {
+    let fields = csv_jsonl::parse_csv_line(&r);
+    print text_join(fields, " | "); // id | name, full | say "hi"
+}
+let line = "{\"level\":\"warn\",\"ms\":250}";
+let key = "level";
+borrow l = region(line, 0, len(line)) {
+    borrow k = region(key, 0, len(key)) {
+        print csv_jsonl::extract_json_string(&l, &k); // warn
+    }
+}
+</script>
+<script type="text/plain" id="pkg-markdown">
+let doc = "# Notes\n\nAnode checks fast. Tests too!\n\n- item one\n";
+borrow d = region(doc, 0, len(doc)) {
+    let blocks = markdown::scan_markdown(&d);
+    for b in &blocks {
+        print concat(concat(int_text(b.kind), ": "), slice(doc, b.start, b.end));
+    }
+}
+</script>
+<script type="text/plain" id="pkg-glob_regex">
+let pattern = "packages/*/src/[a-z]*.an";
+let path = "packages/json/src/lib.an";
+let anchored = "^packages/j.on/";
+borrow p = region(pattern, 0, len(pattern)) {
+    borrow t = region(path, 0, len(path)) {
+        print glob_regex::glob_match(&p, &t); // true
+        borrow a = region(anchored, 0, len(anchored)) {
+            print glob_regex::find_subpattern(&a, &t); // 0
+        }
+    }
+}
+</script>
+<script type="text/plain" id="pkg-json">
+let src = "{\"service\":\"ghosthand\",\"routes\":[\"/health\",\"/v1/run\"],\"limits\":{\"depth\":128}}";
+let path = "limits.depth";
+borrow s = region(src, 0, len(src)) {
+    match json::parse_json(&s) {
+        json::JsonParse::Ok(doc) => {
+            borrow p = region(path, 0, len(path)) {
+                print json::node_int(&doc, json::query_path(&doc, &p)); // 128
+            }
+            print json::render_json(&doc); // compact round-trip
+        }
+        json::JsonParse::Err(message) => {
+            print message;
+        }
+    }
+}
+</script>
+<script type="text/plain" id="pkg-docgen">
+let name = "demo";
+let source = "// Demo module.\n\n// Adds one.\n@effect(no_alloc, no_io, bounded)\npub fn inc(x: int) -> int requires x < 100;\n{\n    return x + 1;\n}\n";
+borrow n = region(name, 0, len(name)) {
+    borrow s = region(source, 0, len(source)) {
+        let doc = docgen::extract_module_docs(&n, &s);
+        print docgen::render_module_markdown(&doc); // # `demo` API reference ...
+    }
+}
+</script>
+<script type="text/plain" id="pkg-bench">
+let mut samples = [];
+for round in 0..9 {
+    let t0 = monotonic_ms();
+    // ... run one batch of the workload here ...
+    push(samples, (monotonic_ms() - t0) * 1000);
+}
+let name = "workload";
+let suite = "demo";
+borrow n = region(name, 0, len(name)) {
+    let stat = bench::compute_stats(&n, 1000, &samples, u64(0));
+    let mut rows = bench::BenchStats();
+    push(rows, stat);
+    borrow s = region(suite, 0, len(suite)) {
+        print bench::render_bench_markdown(&s, &rows);
+    }
+}
+</script>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------------- syntax highlighting ----------------
+  var KW = {
+    anode: "fn pub struct enum vector soa arena map let mut return if else for in while break continue borrow match test requires ensures assert print mod impl self Self try spawn join true false crate region get at",
+    rust: "fn pub struct enum let mut return if else for in while loop break continue match impl use self Self true false as const static mod crate where",
+    c: "typedef struct static const return if else for while do break continue sizeof void unsigned signed",
+    toml: ""
+  };
+  var TY = {
+    anode: "int text str bool u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 ints texts id",
+    rust: "u8 u16 u32 u64 i8 i16 i32 i64 usize isize bool str String Option Some None Ok Err Vec",
+    c: "int long char size_t",
+    toml: ""
+  };
+  function set(s) { var o = Object.create(null); s.split(" ").forEach(function (w) { if (w) o[w] = 1; }); return o; }
+  var KWS = {}, TYS = {};
+  Object.keys(KW).forEach(function (k) { KWS[k] = set(KW[k]); TYS[k] = set(TY[k]); });
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function span(cls, t) { return '<span class="tk-' + cls + '">' + esc(t) + "</span>"; }
+
+  function highlight(code, lang) {
+    var re = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/|^#\s[^\n]*$)|("(?:\\.|[^"\\\n])*")|('(?:\\.|[^'\\\n])')|(@[a-z_]+|#\[[^\]\n]*\]|#include\b|^\[[a-z_.]+\])|('[a-z]\b)|(\b\d[\d_]*\b)|([A-Za-z_][A-Za-z0-9_]*)/gm;
+    var out = "", last = 0, m;
+    while ((m = re.exec(code))) {
+      out += esc(code.slice(last, m.index));
+      var t = m[0], cls = null;
+      if (m[1]) cls = (lang === "toml" || lang === "anode" || lang === "rust" || lang === "c") && !(m[1][0] === "#" && lang !== "toml") ? "c" : null;
+      else if (m[2] || m[3]) cls = "s";
+      else if (m[4]) cls = "a";
+      else if (m[5]) cls = lang === "rust" ? "l" : null;
+      else if (m[6]) cls = "n";
+      else if (m[7]) {
+        var after = code.slice(re.lastIndex, re.lastIndex + 2);
+        if (KWS[lang] && KWS[lang][t]) cls = "k";
+        else if ((TYS[lang] && TYS[lang][t]) || /^[A-Z]/.test(t)) cls = "t";
+        else if (after === "::") cls = "ns";
+        else if (/^\s*\(/.test(code.slice(re.lastIndex, re.lastIndex + 3))) cls = "f";
+      }
+      out += cls ? span(cls, t) : esc(t);
+      last = re.lastIndex;
+    }
+    return out + esc(code.slice(last));
+  }
+  function source(id) {
+    var el = document.getElementById(id);
+    return el ? el.textContent.replace(/^\n/, "").replace(/\s+$/, "") + "\n" : "";
+  }
+  document.querySelectorAll("pre[data-src]").forEach(function (pre) {
+    pre.innerHTML = highlight(source(pre.getAttribute("data-src")), pre.getAttribute("data-lang") || "anode");
+  });
+
+  // ---------------- agent transcript ----------------
+  var transcript = [
+    ["p", "PS> anode new hello_anode"],
+    ["", "Created hello_anode\nNext: anode run hello_anode\nTests: anode test hello_anode"],
+    ["p", "PS> cd hello_anode; ls"],
+    ["", ".gitignore  AGENTS.md  Anode.toml  CLAUDE.md  src"],
+    ["c", "# The agent reads CLAUDE.md -> AGENTS.md, then edits src/greeting.an,\n# writing a Rust-ism:   return text_join(&parts, \" \");"],
+    ["p", "PS> anode check . --json"],
+    ["err", "{\"diagnostics\":[{\"file\":\"src\\\\greeting.an\",\"line\":3,\"message\":\"references are non-escaping call arguments; they cannot be stored, returned or used as values\",\"severity\":\"error\"}],\"ok\":false}"],
+    ["c", "# AGENTS.md §2.2, rule 3: text_join takes the collection itself.\n# The agent changes the line to:   return text_join(parts, \" \");"],
+    ["p", "PS> anode check . --json"],
+    ["ok", "{\"checked_files\":2,\"elapsed_ms\":1.9161,\"ok\":true}"],
+    ["p", "PS> anode test ."],
+    ["ok", "test greeting::message_is_not_empty\n1 tests passed"],
+    ["p", "PS> anode run ."],
+    ["", "Hello from Anode"]
+  ];
+  var term = document.getElementById("agent-term");
+  if (term) {
+    term.innerHTML = transcript.map(function (row) {
+      var cls = { p: "f", c: "c", err: "err", ok: "ok" }[row[0]];
+      return cls ? span(cls, row[1]) : esc(row[1]);
+    }).join("\n");
+  }
+
+  // ---------------- tabs ----------------
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+  function select(tab, focus) {
+    tabs.forEach(function (t) {
+      var on = t === tab;
+      t.setAttribute("aria-selected", on ? "true" : "false");
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+    });
+    if (focus) tab.focus();
+  }
+  tabs.forEach(function (t, i) {
+    t.addEventListener("click", function () { select(t, false); });
+    t.addEventListener("keydown", function (e) {
+      var d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (e.key === "Home") { e.preventDefault(); select(tabs[0], true); }
+      else if (e.key === "End") { e.preventDefault(); select(tabs[tabs.length - 1], true); }
+      else if (d) { e.preventDefault(); select(tabs[(i + d + tabs.length) % tabs.length], true); }
+    });
+  });
+
+  // ---------------- copy buttons ----------------
+  function copyText(text, btn) {
+    function done() { btn.textContent = "Copied"; btn.classList.add("done"); setTimeout(function () { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1600); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (err) { btn.textContent = "Select & copy"; }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, fallback);
+    else fallback();
+  }
+  document.querySelectorAll("[data-copy]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var text = document.getElementById(btn.getAttribute("data-copy")).textContent;
+      copyText(text.replace(/^PS> /gm, ""), btn);
+    });
+  });
+  document.querySelectorAll("[data-copy-src]").forEach(function (btn) {
+    btn.addEventListener("click", function () { copyText(source(btn.getAttribute("data-copy-src")), btn); });
+  });
+
+  // ---------------- stdlib cards ----------------
+  var NA = "no_alloc", NI = "no_io", B = "bounded";
+  var PKGS = [
+    { id: "cli", like: "clap", items: 11, what: "Subcommands, --key=value, -abc clusters, -- separator and aligned help text.",
+      about: "parse_args turns argv into CliArgs { subcommand, flags, positionals }. The first bare token is the subcommand; flag_value_or returns the last key=value.",
+      fns: [["parse_args", [NI, B]], ["has_flag", [NA, NI, B]], ["flag_count", [NA, NI, B]], ["flag_value_or", [NI, B]], ["positional_or", [NI, B]], ["render_help", [NI, B]]],
+      out: "x86_64\nbuild" },
+    { id: "encoding", like: "crc32fast · hex · base64", items: 14, what: "IEEE CRC-32 and RFC 4648 hex/base64. Decoders write into your buffer with no heap.",
+      about: "Checksums and decoders are no_alloc: decoders fill a caller-owned &mut [u8] and return the byte count, or -1 with the buffer untouched.",
+      fns: [["crc32_text", [NA, NI, B]], ["crc32_bytes", [NA, NI, B]], ["hex_encode_bytes", [NI, B]], ["try_hex_decode_into", [NA, NI, B]], ["base64_encode_text", [NI, B]], ["try_base64_decode_into", [NA, NI, B]]],
+      out: "MTIzNDU2Nzg5\n6" },
+    { id: "csv_jsonl", like: "csv · JSON Lines", items: 7, what: "Quoted CSV fields with \"\" escapes, and top-level fields from JSONL log lines.",
+      about: "parse_csv_line follows RFC 4180 quoting; extract_json_* read top-level keys only and decode every string escape, including surrogate pairs.",
+      fns: [["parse_csv_line", [NI, B]], ["non_empty_lines", [NI, B]], ["extract_json_string", [NI, B]], ["extract_json_int", [NI, B]]],
+      out: "id | name, full | say \"hi\"\nwarn" },
+    { id: "markdown", like: "pulldown-cmark (blocks)", items: 6, what: "Headings, paragraphs, code fences and list items with word and sentence counts.",
+      about: "scan_markdown makes one bounded pass into a soa vector of BlockSpan { kind, start, end, level, words, sentences }; slice(doc, start, end) gives the text.",
+      fns: [["scan_markdown", [NI, B]], ["count_words_in_range", [NA, NI, B]], ["count_sentences_in_range", [NA, NI, B]], ["count_kind", [NA, NI, B]]],
+      out: "1: Notes\n2: Anode checks fast. Tests too!\n4: item one" },
+    { id: "glob_regex", like: "glob · regex (subset)", items: 3, what: "Allocation-free * ? [a-z] globs and ^ $ . subpattern search.",
+      about: "Both matchers are no_alloc and bounded: the glob matcher's backtracking has a proven step limit, so it cannot run away on hostile patterns.",
+      fns: [["glob_match", [NA, NI, B]], ["find_subpattern", [NA, NI, B]], ["contains_subpattern", [NA, NI, B]]],
+      out: "true\n0" },
+    { id: "json", like: "serde_json (tree)", items: 17, what: "Strict parser into a generational arena tree, dotted path queries and a compact writer.",
+      about: "Nodes are int indices in pre-order (root = 0) backed by an arena; query_path walks members and array indices; render_json keeps source member order.",
+      fns: [["parse_json", [NI]], ["query_path", [NA, NI, B]], ["object_get", [NA, NI, B]], ["array_len", [NA, NI, B]], ["node_text", [NI, B]], ["render_json", [NI]]],
+      out: "128\n{\"service\":\"ghosthand\",\"routes\":[\"/health\",\"/v1/run\"],\"limits\":{\"depth\":128}}" },
+    { id: "docgen", like: "rustdoc", items: 6, what: "Markdown API references from .an sources: signatures, effects, views and contracts.",
+      about: "Reads leading comments, @effect and @intent annotations and pub declarations line by line; the SDK's API-DOCS.md was generated this way.",
+      fns: [["extract_module_docs", [NI, B]], ["render_module_markdown", [NI, B]], ["count_items_of_kind", [NA, NI, B]]],
+      out: "# `demo` API reference\n\nDemo module.\n\n**1 public item**: 1 fn\n\n## Symbols\n\n| Kind | Name | Line | Effects | Summary |\n| --- | --- | ---: | --- | --- |\n| fn | [`inc`](#inc) | 5 | `no_alloc` `no_io` `bounded` | Adds one. |\n…" },
+    { id: "bench", like: "criterion (reports)", items: 8, what: "Exact min / median / P95 / max and deterministic Markdown + JSON receipts.",
+      about: "Timing is I/O, so you measure in main.an and hand the samples over; compute_stats sorts a copy and reports nearest-rank percentiles.",
+      fns: [["compute_stats", [NI, B]], ["render_bench_markdown", [NI, B]], ["render_bench_json", [NI, B]], ["percentile_sorted", [NA, NI, B]]],
+      out: "## demo\n\n| Workload | Iterations | Samples | Min (us) | Median (us) | P95 (us) | Max (us) | Checksum |\n| :--- | ---: | ---: | ---: | ---: | ---: | ---: | :--- |\n| workload | 1000 | 9 | … machine-specific … |" }
+  ];
+  var grid = document.getElementById("pkgs");
+  var info = document.getElementById("pkg-info");
+  var codeEl = document.getElementById("pkg-code");
+  var outEl = document.getElementById("pkg-out");
+  var fileEl = document.getElementById("pkg-file");
+  var current = PKGS[0];
+  var EFF = {}; EFF[NA] = "na"; EFF[NI] = "ni"; EFF[B] = "b";
+  function show(p) {
+    current = p;
+    grid.querySelectorAll(".card").forEach(function (c) { c.setAttribute("aria-pressed", c.dataset.id === p.id ? "true" : "false"); });
+    info.innerHTML =
+      "<h3>" + esc(p.id) + "</h3><div class=\"card-like\" style=\"color:var(--dim);font-size:13px\">like " + esc(p.like) + " · " + p.items + " public items</div>" +
+      "<p>" + esc(p.about) + "</p>" +
+      "<ul class=\"fns\">" + p.fns.map(function (f) {
+        return "<li><code>" + esc(f[0]) + "</code>" + f[1].map(function (e) { return '<span class="eff eff-' + EFF[e] + '">' + e + "</span>"; }).join("") + "</li>";
+      }).join("") + "</ul>" +
+      '<div class="pkg-links"><a href="https://github.com/OWNER/REPO/blob/main/packages/' + p.id + '/src/lib.an">Source</a><a href="https://github.com/OWNER/REPO/blob/main/docs/API-DOCS.md#' + p.id + '-api-reference">API reference</a><a href="https://github.com/OWNER/REPO/blob/main/docs/BENCHMARK.md">Benchmarks</a></div>';
+    codeEl.innerHTML = highlight(source("pkg-" + p.id), "anode");
+    outEl.textContent = p.out;
+    fileEl.textContent = "using " + p.id;
+  }
+  PKGS.forEach(function (p) {
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "card"; b.dataset.id = p.id; b.setAttribute("aria-pressed", "false");
+    b.innerHTML = '<span class="name">' + esc(p.id) + '</span><span class="like">' + esc(p.like) + '</span><span class="what">' + esc(p.what) + '</span><span class="count">' + p.items + " public items</span>";
+    b.addEventListener("click", function () { show(p); });
+    grid.appendChild(b);
+  });
+  document.getElementById("pkg-copy").addEventListener("click", function () { copyText(source("pkg-" + current.id), this); });
+  show(PKGS[0]);
+
+  // ---------------- counters and bars ----------------
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function countUp(el) {
+    var target = +el.getAttribute("data-count");
+    if (reduce) { el.textContent = target; return; }
+    var start = null, dur = 1100;
+    function frame(ts) {
+      if (start === null) start = ts;
+      var k = Math.min(1, (ts - start) / dur);
+      el.textContent = Math.round(target * (1 - Math.pow(1 - k, 3)));
+      if (k < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+  function grow(el) { el.style.width = el.getAttribute("data-w") + "%"; }
+  var watched = document.querySelectorAll("[data-count], .fill");
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        io.unobserve(en.target);
+        if (en.target.hasAttribute("data-count")) countUp(en.target); else grow(en.target);
+      });
+    }, { threshold: 0.4 });
+    watched.forEach(function (el) { io.observe(el); });
+  } else {
+    watched.forEach(function (el) { if (el.hasAttribute("data-w")) grow(el); });
+  }
+})();
+</script>
+</body>
+</html>

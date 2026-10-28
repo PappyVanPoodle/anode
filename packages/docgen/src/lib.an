@@ -1,0 +1,700 @@
+// docgen: API reference extraction for `.an` sources, rendered as GitHub Markdown.
+//
+// Conventions, read from the source text line by line (bodies are not parsed):
+// a comment block at the very top of the file is the module summary; `//`
+// comments, `@effect(...)` and `@intent("...")` directly above a `pub`
+// declaration (no blank line between) document it; `pub fn` methods inside
+// `impl Type { ... }` are named `Type::method`; private items and tests are skipped.
+pub struct DocItem {
+    kind: text,
+    name: text,
+    signature: text,
+    effects: text,
+    intents: text,
+    contracts: text,
+    docs: text,
+    line: int
+}
+pub vector DocItems(DocItem);
+pub struct ModuleDoc {
+    module_name: text,
+    summary: text,
+    items: DocItems
+}
+struct FnParts {
+    signature: text,
+    contracts: text
+}
+// ---------------------------------------------------------------- scanning helpers
+@effect(no_alloc, no_io, bounded)
+fn is_ident_byte(c: int) -> bool {
+    return (c >= 48 && c <= 57) ||(c >= 65 && c <= 90) ||(c >= 97 && c <= 122) || c == 95;
+}
+@effect(no_alloc, no_io, bounded)
+fn is_ws(c: int) -> bool {
+    return c == 32 || c == 9 || c == 10 || c == 13;
+}
+@effect(no_alloc, no_io, bounded)
+fn first_byte(s: &text, c: int) -> int {
+    for i in 0..len(s) {
+        if byte_at(s, i) == c {
+            return i;
+        }
+    }
+    return -1;
+}
+@effect(no_alloc, no_io, bounded)
+fn last_byte(s: &text, c: int) -> int {
+    let mut found = -1;
+    for i in 0..len(s) {
+        if byte_at(s, i) == c {
+            found = i;
+        }
+    }
+    return found;
+}
+@effect(no_alloc, no_io, bounded)
+fn bytes_equal_at(s: &text, at: int, word: &text) -> bool {
+    if at < 0 || at + len(word) > len(s) {
+        return false;
+    }
+    for k in 0..len(word) {
+        if byte_at(s, at + k) != byte_at(word, k) {
+            return false;
+        }
+    }
+    return true;
+}
+// Offset of `word` as a whole identifier outside string literals, or -1.
+@effect(no_alloc, no_io, bounded)
+fn find_word(s: &text, word: &text) -> int {
+    let n = len(s);
+    let w = len(word);
+    let mut in_string = false;
+    let mut escaped = false;
+    for i in 0..n {
+        let c = byte_at(s, i);
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == 92 {
+                escaped = true;
+            } else if c == 34 {
+                in_string = false;
+            }
+        } else if c == 34 {
+            in_string = true;
+        } else if (i == 0 || !is_ident_byte(byte_at(s, i - 1))) &&(i + w >= n || !is_ident_byte(byte_at(s, i + w))) && bytes_equal_at(&s, i, &word) {
+            return i;
+        }
+    }
+    return -1;
+}
+// Offset of the `{` opening a function body: field views `T.{ ... }` and
+// braces inside string literals are skipped. -1 if the body has not started.
+@effect(no_alloc, no_io, bounded)
+fn find_body_brace(s: &text) -> int {
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut view_depth = 0;
+    let mut prev = 0;
+    for i in 0..len(s) {
+        let c = byte_at(s, i);
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == 92 {
+                escaped = true;
+            } else if c == 34 {
+                in_string = false;
+            }
+        } else if c == 34 {
+            in_string = true;
+        } else if c == 123 {
+            if prev == 46 || view_depth > 0 {
+                view_depth = view_depth + 1;
+            } else {
+                return i;
+            }
+        } else if c == 125 && view_depth > 0 {
+            view_depth = view_depth - 1;
+        }
+        if !is_ws(c) {
+            prev = c;
+        }
+    }
+    return -1;
+}
+// Offset just past the `}` matching the first `{`, or -1.
+@effect(no_alloc, no_io, bounded)
+fn block_end(s: &text) -> int {
+    let mut depth = 0;
+    for i in 0..len(s) {
+        let c = byte_at(s, i);
+        if c == 123 {
+            depth = depth + 1;
+        } else if c == 125 && depth > 0 {
+            depth = depth - 1;
+            if depth == 0 {
+                return i + 1;
+            }
+        }
+    }
+    return -1;
+}
+// Where a captured declaration ends (exclusive), or -1 while it continues.
+@effect(no_alloc, no_io, bounded)
+fn decl_end(kind: &text, s: &text) -> int {
+    let k = byte_at(kind, 0);
+    if k == 102 {
+        return find_body_brace(&s);
+    }
+    if k == 115 && len(kind) == 6 {
+        return block_end(&s);
+    }
+    if k == 101 {
+        return block_end(&s);
+    }
+    return first_byte(&s, 59);
+}
+@effect(no_io, bounded)
+fn collapse_ws(s: &text) -> text {
+    let mut parts = texts();
+    let mut run_start = -1;
+    for i in 0..len(s) {
+        if is_ws(byte_at(s, i)) {
+            if run_start >= 0 {
+                push(parts, slice(s, run_start, i));
+                run_start = -1;
+            }
+        } else if run_start < 0 {
+            run_start = i;
+        }
+    }
+    if run_start >= 0 {
+        push(parts, slice(s, run_start, len(s)));
+    }
+    return text_join(parts, " ");
+}
+// Identifier at `from`, skipping leading spaces.
+@effect(no_io, bounded)
+fn ident_at(s: &text, from: int) -> text {
+    let mut start = len(s);
+    for i in from..len(s) {
+        if byte_at(s, i) != 32 {
+            start = i;
+            break;
+        }
+    }
+    let mut end = start;
+    for j in start..len(s) {
+        if !is_ident_byte(byte_at(s, j)) {
+            break;
+        }
+        end = j + 1;
+    }
+    return slice(s, start, end);
+}
+@effect(no_io, bounded)
+fn decl_kind(t: &text) -> text {
+    if text_starts_with(t, "pub fn ") {
+        return "fn";
+    }
+    if text_starts_with(t, "pub struct ") {
+        return "struct";
+    }
+    if text_starts_with(t, "pub enum ") {
+        return "enum";
+    }
+    if text_starts_with(t, "pub soa vector ") {
+        return "soa_vector";
+    }
+    if text_starts_with(t, "pub vector ") {
+        return "vector";
+    }
+    if text_starts_with(t, "pub map ") {
+        return "map";
+    }
+    if text_starts_with(t, "pub arena ") {
+        return "arena";
+    }
+    return "";
+}
+// Length of the `pub <keyword> ` prefix for a kind returned by decl_kind.
+@effect(no_alloc, no_io, bounded)
+fn prefix_len(kind: &text) -> int {
+    if len(kind) == 10 {
+        return 15;
+    }
+    return len(kind) + 5;
+}
+// Text of a `//` line without the slashes (also `///`, `//!`) and one space.
+@effect(no_io, bounded)
+fn comment_body(t: &text) -> text {
+    let mut start = 2;
+    for i in 2..len(t) {
+        let c = byte_at(t, i);
+        if c != 47 && c != 33 {
+            break;
+        }
+        start = i + 1;
+    }
+    if start < len(t) && byte_at(t, start) == 32 {
+        start = start + 1;
+    }
+    return slice(t, start, len(t));
+}
+// `@effect(a, b)` -> "a, b".
+@effect(no_io, bounded)
+fn annotation_inner(t: &text) -> text {
+    let open = first_byte(&t, 40);
+    let close = last_byte(&t, 41);
+    if open < 0 || close <= open {
+        return "";
+    }
+    let inner = slice(t, open + 1, close);
+    return collapse_ws(&inner);
+}
+// `@intent("x")` -> "x".
+@effect(no_io, bounded)
+fn quoted_inner(t: &text) -> text {
+    let open = first_byte(&t, 34);
+    let close = last_byte(&t, 34);
+    if open < 0 || close <= open {
+        return annotation_inner(&t);
+    }
+    return slice(t, open + 1, close);
+}
+// View parameters (`name: &mut T.{ ... }`) of the first parameter list.
+@effect(no_io, bounded)
+fn view_params(decl: &text, out: &mut texts) {
+    let open = first_byte(&decl, 40);
+    if open < 0 {
+        return;
+    }
+    let mut depth = 0;
+    let mut param_start = open + 1;
+    for i in open..len(decl) {
+        let c = byte_at(decl, i);
+        if c == 40 || c == 123 {
+            depth = depth + 1;
+        } else if c == 41 || c == 125 {
+            depth = depth - 1;
+        }
+        let ends_param =(c == 44 && depth == 1) ||(c == 41 && depth == 0);
+        if ends_param {
+            let param = slice(decl, param_start, i);
+            let trimmed = text_trim(param);
+            if contains(trimmed, ".{") {
+                push(out, concat("view ", trimmed));
+            }
+            param_start = i + 1;
+        }
+        if c == 41 && depth == 0 {
+            return;
+        }
+    }
+}
+@effect(no_io, bounded)
+fn split_fn(decl: &text) -> FnParts {
+    let req = "requires";
+    let ens = "ensures";
+    let r = find_word(&decl, &req);
+    let e = find_word(&decl, &ens);
+    let mut cut = len(decl);
+    if r >= 0 && r < cut {
+        cut = r;
+    }
+    if e >= 0 && e < cut {
+        cut = e;
+    }
+    let head = slice(decl, 0, cut);
+    let signature = text_trim(head);
+    let mut lines = texts();
+    view_params(&signature, &mut lines);
+    if cut < len(decl) {
+        let tail = slice(decl, cut, len(decl));
+        let clauses = split(tail, ";");
+        for i in 0..len(clauses) {
+            let clause = text_at(clauses, i);
+            let trimmed = text_trim(clause);
+            if len(trimmed) > 0 {
+                push(lines, trimmed);
+            }
+        }
+    }
+    return FnParts { signature: signature, contracts: text_join(lines, "\n") };
+}
+@effect(no_io, bounded)
+fn make_item(kind: &text, name: &text, captured: &text, line: int, docs: &text, effects: &text, intents: &text) -> DocItem {
+    let cut = decl_end(&kind, &captured);
+    let mut end = len(captured);
+    if cut >= 0 {
+        end = cut;
+    }
+    let raw = slice(captured, 0, end);
+    let decl = collapse_ws(&raw);
+    let mut signature = clone(decl);
+    let mut contracts = "";
+    if text_eq(kind, "fn") {
+        let parts = split_fn(&decl);
+        signature = parts.signature;
+        contracts = parts.contracts;
+    }
+    return DocItem { kind: clone(kind), name: clone(name), signature: signature, effects: clone(effects), intents: clone(intents), contracts: contracts, docs: clone(docs), line: line };
+}
+@effect(no_io, bounded)
+pub fn extract_module_docs(module_name: &str, source: &str) -> ModuleDoc {
+    let lines = text_lines(source);
+    let mut items = DocItems();
+    let mut summary = texts();
+    let mut in_header = true;
+    // Annotations and comments waiting for the next declaration.
+    let mut docs = texts();
+    let mut effects = "";
+    let mut intents = texts();
+    let mut impl_name = "";
+    // The declaration being joined across lines.
+    let mut capturing = false;
+    let mut cap_kind = "";
+    let mut cap_name = "";
+    let mut cap_text = "";
+    let mut cap_line = 0;
+    let mut cap_lines = 0;
+    let mut cap_docs = "";
+    let mut cap_effects = "";
+    let mut cap_intents = "";
+    for i in 0..len(lines) {
+        let raw = text_at(lines, i);
+        let t = text_trim(raw);
+        if capturing {
+            cap_text = concat(concat(cap_text, " "), t);
+            cap_lines = cap_lines + 1;
+        } else if len(t) == 0 {
+            in_header = false;
+            docs = texts();
+            effects = "";
+            intents = texts();
+        } else if text_starts_with(t, "//") {
+            let body = comment_body(&t);
+            if in_header {
+                push(summary, body);
+            } else if !text_starts_with(body, "---") {
+                push(docs, body);
+            }
+        } else if text_starts_with(t, "@effect(") {
+            in_header = false;
+            effects = annotation_inner(&t);
+        } else if text_starts_with(t, "@intent(") {
+            in_header = false;
+            push(intents, quoted_inner(&t));
+        } else {
+            in_header = false;
+            let kind = decl_kind(&t);
+            if len(kind) > 0 {
+                let name = ident_at(&t, prefix_len(&kind));
+                if text_eq(kind, "fn") && len(impl_name) > 0 {
+                    cap_name = concat(concat(impl_name, "::"), name);
+                } else {
+                    cap_name = name;
+                }
+                capturing = true;
+                cap_kind = kind;
+                cap_text = clone(t);
+                cap_line = i + 1;
+                cap_lines = 1;
+                cap_docs = text_join(docs, "\n");
+                cap_effects = clone(effects);
+                cap_intents = text_join(intents, "; ");
+            } else if text_starts_with(t, "impl ") {
+                impl_name = ident_at(&t, 5);
+            } else if text_starts_with(raw, "}") {
+                impl_name = "";
+            }
+            docs = texts();
+            effects = "";
+            intents = texts();
+        }
+        if capturing {
+            if decl_end(&cap_kind, &cap_text) >= 0 {
+                push(items, make_item(&cap_kind, &cap_name, &cap_text, cap_line, &cap_docs, &cap_effects, &cap_intents));
+                capturing = false;
+            } else if cap_lines >= 64 {
+                capturing = false;
+            }
+        }
+    }
+    return ModuleDoc { module_name: to_text(module_name), summary: text_join(summary, "\n"), items: items };
+}
+// ---------------------------------------------------------------- markdown
+@effect(no_io, bounded)
+fn plural(n: int, word: &text) -> text {
+    let base = concat(concat(int_text(n), " "), word);
+    if n == 1 {
+        return base;
+    }
+    return concat(base, "s");
+}
+@effect(no_alloc, no_io, bounded)
+pub fn count_items_of_kind(doc: &ModuleDoc, kind: &text) -> int {
+    let mut count = 0;
+    for item in &doc.items {
+        if text_eq(item.kind, kind) {
+            count = count + 1;
+        }
+    }
+    return count;
+}
+// GitHub heading anchor of a name: lowercase, keeping [a-z0-9_-].
+@effect(no_io, bounded)
+fn anchor_of(name: &text) -> text {
+    let mut parts = texts();
+    for i in 0..len(name) {
+        let c = byte_at(name, i);
+        if c >= 65 && c <= 90 {
+            push(parts, codepoint_text(c + 32));
+        } else if (c >= 97 && c <= 122) ||(c >= 48 && c <= 57) || c == 95 || c == 45 {
+            push(parts, codepoint_text(c));
+        }
+    }
+    return text_join(parts, "");
+}
+// "`no_alloc` `no_io` `bounded`", or "" without effects.
+@effect(no_io, bounded)
+fn badges(effects: &text) -> text {
+    if len(effects) == 0 {
+        return "";
+    }
+    let names = split(effects, ",");
+    let mut parts = texts();
+    for i in 0..len(names) {
+        let raw = text_at(names, i);
+        let name = text_trim(raw);
+        if len(name) > 0 {
+            push(parts, concat(concat("`", name), "`"));
+        }
+    }
+    return text_join(parts, " ");
+}
+@effect(no_io, bounded)
+fn first_line(s: &text) -> text {
+    let nl = first_byte(&s, 10);
+    if nl < 0 {
+        return clone(s);
+    }
+    return slice(s, 0, nl);
+}
+@effect(no_io, bounded)
+fn table_cell(s: &text) -> text {
+    return text_replace(s, "|", "\\|");
+}
+// Structs and enums get one field or variant per line.
+@effect(no_io, bounded)
+fn pretty_signature(item: &DocItem) -> text {
+    let is_block = text_eq(item.kind, "struct") || text_eq(item.kind, "enum");
+    let open = first_byte(&item.signature, 123);
+    let close = last_byte(&item.signature, 125);
+    if !is_block || open < 0 || close <= open + 1 {
+        return clone(item.signature);
+    }
+    let head = slice(item.signature, 0, open);
+    let body = slice(item.signature, open + 1, close);
+    let fields = split(body, ",");
+    let mut lines = texts();
+    push(lines, concat(text_trim(head), " {"));
+    let mut kept = texts();
+    for i in 0..len(fields) {
+        let raw = text_at(fields, i);
+        let field = text_trim(raw);
+        if len(field) > 0 {
+            push(kept, field);
+        }
+    }
+    for j in 0..len(kept) {
+        let field = text_at(kept, j);
+        if j + 1 < len(kept) {
+            push(lines, concat(concat("    ", field), ","));
+        } else {
+            push(lines, concat("    ", field));
+        }
+    }
+    push(lines, "}");
+    return text_join(lines, "\n");
+}
+@effect(no_io, bounded)
+fn symbol_row(item: &DocItem) -> text {
+    let mut row = concat(concat(concat("| ", item.kind), " | [`"), item.name);
+    row = concat(concat(concat(row, "`](#"), anchor_of(&item.name)), ") | ");
+    row = concat(concat(row, int_text(item.line)), " | ");
+    row = concat(concat(row, badges(&item.effects)), " | ");
+    let summary = first_line(&item.docs);
+    return concat(concat(row, table_cell(&summary)), " |");
+}
+@effect(no_io, bounded)
+fn item_section(item: &DocItem) -> text {
+    let mut out = texts();
+    push(out, concat(concat("### `", item.name), "`"));
+    push(out, "");
+    let mut meta = concat(concat(concat("**", item.kind), "** · line "), int_text(item.line));
+    if len(item.effects) > 0 {
+        meta = concat(concat(meta, " · "), badges(&item.effects));
+    }
+    push(out, meta);
+    push(out, "");
+    push(out, "```anode");
+    push(out, pretty_signature(&item));
+    push(out, "```");
+    if len(item.intents) > 0 {
+        push(out, "");
+        push(out, concat("> **Intent:** ", item.intents));
+    }
+    if len(item.contracts) > 0 {
+        push(out, "");
+        push(out, "**Contracts**");
+        push(out, "");
+        let clauses = split(item.contracts, "\n");
+        for i in 0..len(clauses) {
+            let clause = text_at(clauses, i);
+            push(out, concat(concat("- `", clause), "`"));
+        }
+    }
+    if len(item.docs) > 0 {
+        push(out, "");
+        push(out, clone(item.docs));
+    }
+    return text_join(out, "\n");
+}
+// Summary header, a symbol table and one section per item.
+@effect(no_io, bounded)
+pub fn render_module_markdown(doc: &ModuleDoc) -> text {
+    let mut out = texts();
+    push(out, concat(concat("# `", doc.module_name), "` API reference"));
+    push(out, "");
+    if len(doc.summary) > 0 {
+        push(out, clone(doc.summary));
+        push(out, "");
+    }
+    let word = "public item";
+    let mut line = concat(concat("**", plural(len(doc.items), &word)), "**");
+    let kinds = ["struct", "enum", "vector", "soa_vector", "map", "arena", "fn"];
+    let mut breakdown = texts();
+    for k in 0..len(kinds) {
+        let kind = text_at(kinds, k);
+        let n = count_items_of_kind(&doc, &kind);
+        if n > 0 {
+            push(breakdown, concat(concat(int_text(n), " "), kind));
+        }
+    }
+    if len(breakdown) > 0 {
+        line = concat(concat(line, ": "), text_join(breakdown, " · "));
+    }
+    push(out, line);
+    if len(doc.items) > 0 {
+        push(out, "");
+        push(out, "## Symbols");
+        push(out, "");
+        push(out, "| Kind | Name | Line | Effects | Summary |");
+        push(out, "| --- | --- | ---: | --- | --- |");
+        for item in &doc.items {
+            push(out, symbol_row(&item));
+        }
+        push(out, "");
+        push(out, "## Reference");
+        for item in &doc.items {
+            push(out, "");
+            push(out, item_section(&item));
+        }
+    }
+    push(out, "");
+    return text_join(out, "\n");
+}
+// Library packages carry an empty entry point so `anode check <package>` accepts them.
+fn main() {}
+// ---------------------------------------------------------------- tests
+fn extract(name: &text, source: &text) -> ModuleDoc {
+    let mut doc = ModuleDoc { module_name: "", summary: "", items: DocItems() };
+    borrow n = region(name, 0, len(name)) {
+        borrow s = region(source, 0, len(source)) {
+            doc = extract_module_docs(&n, &s);
+        }
+    }
+    return doc;
+}
+fn sample_source() -> text {
+    let lines = ["// Demo module: counters and rows.", "// Second summary line.", "pub struct Header { magic: int }", "", "// Per-call state.", "pub struct State {", "    a: int,", "    b: int", "}", "pub soa vector Rows(State);", "", "// Bumps `a` by `b` plus `by`.", "// Never decreases `a`.", "@effect(no_alloc, no_io, bounded)", "@intent(\"advance the counter\")", "pub fn bump(s: &mut State.{ mut a, b }, by: int) -> int requires by >= 0;", "requires s.b >= 0;", "ensures result >= 0;", "{", "    // body comment, not documentation", "    s.a = s.a + s.b + by;", "    return s.a;", "}", "fn private_helper() -> int {", "    return 1;", "}", "struct Hidden { x: int }", "impl State {", "    // Current value of `a`.", "    pub fn read(self: &Self) -> int { return self.a; }", "}", "test hidden_test() {", "    assert true;", "}"];
+    return text_join(lines, "\n");
+}
+test extracts_public_declarations_contracts_and_annotations() {
+    let name = "demo";
+    let source = sample_source();
+    let doc = extract(&name, &source);
+    let summary_ok = text_eq(doc.summary, "Demo module: counters and rows.\nSecond summary line.");
+    assert summary_ok;
+    assert len(doc.items) == 5;
+    let header = clone_at(doc.items, 0);
+    let header_ok = text_eq(header.kind, "struct") && text_eq(header.name, "Header") && len(header.docs) == 0;
+    assert header_ok;
+    let state = clone_at(doc.items, 1);
+    let state_ok = text_eq(state.signature, "pub struct State { a: int, b: int }") && text_eq(state.docs, "Per-call state.");
+    assert state_ok;
+    assert state.line == 6;
+    let rows = clone_at(doc.items, 2);
+    let rows_ok = text_eq(rows.kind, "soa_vector") && text_eq(rows.name, "Rows") && text_eq(rows.signature, "pub soa vector Rows(State)");
+    assert rows_ok;
+    let bump = clone_at(doc.items, 3);
+    let bump_kind = text_eq(bump.kind, "fn") && text_eq(bump.name, "bump");
+    assert bump_kind;
+    assert bump.line == 16;
+    let sig_ok = text_eq(bump.signature, "pub fn bump(s: &mut State.{ mut a, b }, by: int) -> int");
+    assert sig_ok;
+    let effects_ok = text_eq(bump.effects, "no_alloc, no_io, bounded");
+    assert effects_ok;
+    let intents_ok = text_eq(bump.intents, "advance the counter");
+    assert intents_ok;
+    let contracts_ok = text_eq(bump.contracts, "view s: &mut State.{ mut a, b }\nrequires by >= 0\nrequires s.b >= 0\nensures result >= 0");
+    assert contracts_ok;
+    let docs_ok = text_eq(bump.docs, "Bumps `a` by `b` plus `by`.\nNever decreases `a`.");
+    assert docs_ok;
+    let read = clone_at(doc.items, 4);
+    let read_ok = text_eq(read.name, "State::read") && text_eq(read.signature, "pub fn read(self: &Self) -> int") && text_eq(read.docs, "Current value of `a`.");
+    assert read_ok;
+}
+test renders_markdown_reference() {
+    let name = "demo";
+    let source = sample_source();
+    let doc = extract(&name, &source);
+    let md = render_module_markdown(&doc);
+    let title = text_starts_with(md, "# `demo` API reference\n\nDemo module: counters and rows.\nSecond summary line.\n\n**5 public items**: 2 struct · 1 soa_vector · 2 fn\n");
+    assert title;
+    let table = contains(md, "| Kind | Name | Line | Effects | Summary |\n| --- | --- | ---: | --- | --- |\n| struct | [`Header`](#header) | 3 |  |  |\n");
+    assert table;
+    let bump_row = contains(md, "| fn | [`bump`](#bump) | 16 | `no_alloc` `no_io` `bounded` | Bumps `a` by `b` plus `by`. |");
+    assert bump_row;
+    let method_row = contains(md, "[`State::read`](#stateread)");
+    assert method_row;
+    let state_block = contains(md, "```anode\npub struct State {\n    a: int,\n    b: int\n}\n```");
+    assert state_block;
+    let bump_section = contains(md, "### `bump`\n\n**fn** · line 16 · `no_alloc` `no_io` `bounded`\n\n```anode\npub fn bump(s: &mut State.{ mut a, b }, by: int) -> int\n```\n\n> **Intent:** advance the counter\n\n**Contracts**\n\n- `view s: &mut State.{ mut a, b }`\n- `requires by >= 0`\n- `requires s.b >= 0`\n- `ensures result >= 0`\n\nBumps `a` by `b` plus `by`.\nNever decreases `a`.");
+    assert bump_section;
+    let private_hidden = contains(md, "private_helper") || contains(md, "Hidden") || contains(md, "hidden_test") || contains(md, "body comment");
+    assert !private_hidden;
+}
+test empty_and_annotation_only_sources() {
+    let name = "empty";
+    let source = "";
+    let doc = extract(&name, &source);
+    assert len(doc.items) == 0;
+    assert len(doc.summary) == 0;
+    let md = render_module_markdown(&doc);
+    let ok = text_eq(md, "# `empty` API reference\n\n**0 public items**\n");
+    assert ok;
+    let stray = "@effect(no_io)\n\npub map Index(text, int);\npub arena Nodes(Index);";
+    let doc2 = extract(&name, &stray);
+    assert len(doc2.items) == 2;
+    let index = clone_at(doc2.items, 0);
+    let index_ok = text_eq(index.kind, "map") && len(index.effects) == 0 && text_eq(index.signature, "pub map Index(text, int)");
+    assert index_ok;
+    let nodes = clone_at(doc2.items, 1);
+    let nodes_ok = text_eq(nodes.kind, "arena") && text_eq(nodes.name, "Nodes");
+    assert nodes_ok;
+}

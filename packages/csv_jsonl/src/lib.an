@@ -1,0 +1,379 @@
+// csv_jsonl: RFC 4180-style CSV rows and JSON Lines field extraction.
+//
+// CSV: fields split on ','; a field that starts with '"' is quoted, may
+// contain ',' and uses "" for a literal quote. A quote inside an unquoted
+// field is literal. One trailing CR is ignored. An empty line is one empty field.
+//
+// JSONL: `extract_json_*` read top-level keys of one object per line; keys
+// inside nested objects or string values never match.
+@effect(no_io, bounded)
+pub fn parse_csv_line(line: &str) -> texts {
+    let mut fields = texts();
+    let mut n = len(line);
+    if n > 0 && byte_at(line, n - 1) == 13 {
+        n = n - 1;
+    }
+    let mut current = "";
+    let mut field_start = 0;
+    let mut run_start = 0;
+    let mut in_quotes = false;
+    let mut skip = false;
+    for i in 0..n {
+        if skip {
+            skip = false;
+            continue;
+        }
+        let c = byte_at(line, i);
+        if in_quotes {
+            if c == 34 {
+                if i + 1 < n && byte_at(line, i + 1) == 34 {
+                    // "" keeps one quote: the run ends just after the first.
+                    current = concat(current, slice(line, run_start, i + 1));
+                    run_start = i + 2;
+                    skip = true;
+                } else {
+                    current = concat(current, slice(line, run_start, i));
+                    run_start = i + 1;
+                    in_quotes = false;
+                }
+            }
+        } else if c == 44 {
+            current = concat(current, slice(line, run_start, i));
+            push(fields, clone(current));
+            current = "";
+            field_start = i + 1;
+            run_start = i + 1;
+        } else if c == 34 && i == field_start {
+            in_quotes = true;
+            run_start = i + 1;
+        }
+    }
+    if run_start < n {
+        current = concat(current, slice(line, run_start, n));
+    }
+    push(fields, current);
+    return fields;
+}
+// Lines of `raw` (LF or CRLF) with surrounding whitespace trimmed; blank lines dropped.
+@effect(no_io, bounded)
+pub fn non_empty_lines(raw: &str) -> texts {
+    let lines = text_lines(raw);
+    let mut out = texts();
+    for i in 0..len(lines) {
+        let line = text_at(lines, i);
+        let trimmed = text_trim(line);
+        if len(trimmed) > 0 {
+            push(out, trimmed);
+        }
+    }
+    return out;
+}
+@effect(no_alloc, no_io, bounded)
+fn is_json_ws(c: int) -> bool {
+    return c == 32 || c == 9 || c == 10 || c == 13;
+}
+@effect(no_alloc, no_io, bounded)
+fn skip_ws(s: &str, from: int) -> int {
+    for j in from..len(s) {
+        if !is_json_ws(byte_at(s, j)) {
+            return j;
+        }
+    }
+    return len(s);
+}
+// Index of the quote closing the string that opens at `open`, or -1.
+@effect(no_alloc, no_io, bounded)
+pub fn json_string_end(s: &str, open: int) -> int {
+    let mut escaped = false;
+    for j in open + 1..len(s) {
+        let c = byte_at(s, j);
+        if escaped {
+            escaped = false;
+        } else if c == 92 {
+            escaped = true;
+        } else if c == 34 {
+            return j;
+        }
+    }
+    return -1;
+}
+@effect(no_alloc, no_io, bounded)
+fn hex_value(c: int) -> int {
+    if c >= 48 && c <= 57 {
+        return c - 48;
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87;
+    }
+    if c >= 65 && c <= 70 {
+        return c - 55;
+    }
+    return -1;
+}
+// Four hex digits at s[at..at+4] as a number, or -1.
+@effect(no_alloc, no_io, bounded)
+fn hex4(s: &str, at: int) -> int {
+    if at + 4 > len(s) {
+        return -1;
+    }
+    let mut v = 0;
+    for k in at..at + 4 {
+        let d = hex_value(byte_at(s, k));
+        if d < 0 {
+            return -1;
+        }
+        v = v * 16 + d;
+    }
+    return v;
+}
+// Decodes the JSON string body s[start..end] (between the quotes).
+// Unknown escapes are kept verbatim; \u0000 and lone surrogates become U+FFFD.
+@effect(no_io, bounded)
+pub fn decode_json_string(s: &str, start: int, end: int) -> text {
+    let mut parts = texts();
+    let mut run_start = start;
+    let mut skip_to = start;
+    for j in start..end {
+        if j >= skip_to && byte_at(s, j) == 92 && j + 1 < end {
+            push(parts, slice(s, run_start, j));
+            let e = byte_at(s, j + 1);
+            skip_to = j + 2;
+            if e == 110 {
+                push(parts, "\n");
+            } else if e == 116 {
+                push(parts, "\t");
+            } else if e == 114 {
+                push(parts, "\r");
+            } else if e == 98 {
+                push(parts, codepoint_text(8));
+            } else if e == 102 {
+                push(parts, codepoint_text(12));
+            } else if e == 34 || e == 92 || e == 47 {
+                push(parts, slice(s, j + 1, j + 2));
+            } else if e == 117 {
+                let mut cp = hex4(&s, j + 2);
+                if cp >= 0 {
+                    skip_to = j + 6;
+                    if cp >= 55296 && cp <= 56319 && j + 12 <= end && byte_at(s, j + 6) == 92 && byte_at(s, j + 7) == 117 {
+                        let lo = hex4(&s, j + 8);
+                        if lo >= 56320 && lo <= 57343 {
+                            cp = 65536 +(cp - 55296) * 1024 +(lo - 56320);
+                            skip_to = j + 12;
+                        }
+                    }
+                    if cp == 0 ||(cp >= 55296 && cp <= 57343) {
+                        cp = 65533;
+                    }
+                    push(parts, codepoint_text(cp));
+                } else {
+                    push(parts, slice(s, j, j + 2));
+                }
+            } else {
+                push(parts, slice(s, j, j + 2));
+            }
+            run_start = skip_to;
+        }
+    }
+    if run_start < end {
+        push(parts, slice(s, run_start, end));
+    }
+    return text_join(parts, "");
+}
+// Start offset of the value for top-level `key` in a one-object line, or -1.
+@effect(no_io, bounded)
+pub fn find_json_value(line: &str, key: &str) -> int {
+    let n = len(line);
+    let mut depth = 0;
+    let mut skip_to = 0;
+    for i in 0..n {
+        if i >= skip_to {
+            let c = byte_at(line, i);
+            if c == 123 || c == 91 {
+                depth = depth + 1;
+            } else if c == 125 || c == 93 {
+                depth = depth - 1;
+            } else if c == 34 {
+                let close = json_string_end(&line, i);
+                if close < 0 {
+                    return -1;
+                }
+                skip_to = close + 1;
+                let colon = skip_ws(&line, close + 1);
+                if depth == 1 && colon < n && byte_at(line, colon) == 58 {
+                    let name = decode_json_string(&line, i + 1, close);
+                    if text_eq(name, key) {
+                        return skip_ws(&line, colon + 1);
+                    }
+                }
+            }
+        }
+    }
+    return -1;
+}
+// String value of top-level `key`; "" when missing or not a string.
+@effect(no_io, bounded)
+pub fn extract_json_string(line: &str, key: &str) -> text {
+    let v = find_json_value(&line, &key);
+    if v < 0 || v >= len(line) || byte_at(line, v) != 34 {
+        return "";
+    }
+    let close = json_string_end(&line, v);
+    if close < 0 {
+        return "";
+    }
+    return decode_json_string(&line, v + 1, close);
+}
+// Integer value of top-level `key`; `fallback` when missing, not an integer or out of range.
+@effect(no_io, bounded)
+pub fn extract_json_int(line: &str, key: &str, fallback: int) -> int {
+    let v = find_json_value(&line, &key);
+    if v < 0 {
+        return fallback;
+    }
+    let mut end = v;
+    for j in v..len(line) {
+        let c = byte_at(line, j);
+        if (c >= 48 && c <= 57) ||(c == 45 && j == v) {
+            end = j + 1;
+        } else {
+            break;
+        }
+    }
+    let digits = slice(line, v, end);
+    if !is_int(digits) {
+        return fallback;
+    }
+    return parse_int(digits);
+}
+// Library packages carry an empty entry point so `anode check <package>` accepts them.
+fn main() {}
+// ---------------------------------------------------------------- tests
+fn csv(line: &text) -> texts {
+    let mut out = texts();
+    borrow v = region(line, 0, len(line)) {
+        out = parse_csv_line(&v);
+    }
+    return out;
+}
+fn field_is(fields: &texts, i: int, want: &text) -> bool {
+    if i >= len(fields) {
+        return false;
+    }
+    let got = text_at(fields, i);
+    return text_eq(got, want);
+}
+fn get_string(line: &text, key: &text) -> text {
+    let mut out = "";
+    borrow l = region(line, 0, len(line)) {
+        borrow k = region(key, 0, len(key)) {
+            out = extract_json_string(&l, &k);
+        }
+    }
+    return out;
+}
+test csv_unquoted_and_empty_fields() {
+    let line = "alpha,beta,,42";
+    let f = csv(&line);
+    assert len(f) == 4;
+    let w0 = "alpha";
+    let ok0 = field_is(&f, 0, &w0);
+    let w2 = "";
+    let ok2 = field_is(&f, 2, &w2);
+    let w3 = "42";
+    let ok3 = field_is(&f, 3, &w3);
+    assert ok0 && ok2 && ok3;
+    let commas = ",,";
+    let e = csv(&commas);
+    assert len(e) == 3;
+    let blank = "";
+    let b = csv(&blank);
+    assert len(b) == 1;
+    let crlf = "x,y\r";
+    let c = csv(&crlf);
+    assert len(c) == 2;
+    let wy = "y";
+    let oky = field_is(&c, 1, &wy);
+    assert oky;
+}
+test csv_quoted_fields_and_escaped_quotes() {
+    let line = "\"hello, world\",42,\"say \"\"hi\"\"\",\"\",tail";
+    let f = csv(&line);
+    assert len(f) == 5;
+    let w0 = "hello, world";
+    let ok0 = field_is(&f, 0, &w0);
+    assert ok0;
+    let w2 = "say \"hi\"";
+    let ok2 = field_is(&f, 2, &w2);
+    assert ok2;
+    let w3 = "";
+    let ok3 = field_is(&f, 3, &w3);
+    assert ok3;
+    let unicode = "café,\"naïve, 🦜\",a\"b";
+    let u = csv(&unicode);
+    assert len(u) == 3;
+    let u1 = "naïve, 🦜";
+    let oku1 = field_is(&u, 1, &u1);
+    assert oku1;
+    let u2 = "a\"b";
+    let oku2 = field_is(&u, 2, &u2);
+    assert oku2;
+    let only_quotes = "\"\"\"\"";
+    let q = csv(&only_quotes);
+    assert len(q) == 1;
+    let wq = "\"";
+    let okq = field_is(&q, 0, &wq);
+    assert okq;
+}
+test jsonl_lines_and_top_level_string_fields() {
+    let raw = "{\"name\":\"alpha\",\"n\":1}\n\n   \n{\"note\":\"name\", \"nested\":{\"name\":\"inner\"}, \"name\" : \"be\\\"ta\"}\r\n";
+    let mut lines = texts();
+    borrow r = region(raw, 0, len(raw)) {
+        lines = non_empty_lines(&r);
+    }
+    assert len(lines) == 2;
+    let first = text_at(lines, 0);
+    let second = text_at(lines, 1);
+    let key = "name";
+    let a = get_string(&first, &key);
+    let a_ok = text_eq(a, "alpha");
+    assert a_ok;
+    let b = get_string(&second, &key);
+    let b_ok = text_eq(b, "be\"ta");
+    assert b_ok;
+    let missing = "missing";
+    let m = get_string(&first, &missing);
+    assert len(m) == 0;
+    let num_key = "n";
+    let not_string = get_string(&first, &num_key);
+    assert len(not_string) == 0;
+    let mut n = 0;
+    let mut absent = 0;
+    borrow l = region(first, 0, len(first)) {
+        borrow k = region(num_key, 0, len(num_key)) {
+            n = extract_json_int(&l, &k, -1);
+        }
+        borrow k2 = region(missing, 0, len(missing)) {
+            absent = extract_json_int(&l, &k2, -1);
+        }
+    }
+    assert n == 1;
+    assert absent == -1;
+}
+test jsonl_escapes_and_unicode() {
+    let line = "{\"s\":\"tab\\there\\nline \\u00e9\\ud83e\\udd9c \\/ \\\\\",\"neg\":-42}";
+    let key = "s";
+    let s = get_string(&line, &key);
+    let s_ok = text_eq(s, "tab\there\nline é🦜 / \\");
+    assert s_ok;
+    let neg_key = "neg";
+    let mut neg = 0;
+    borrow l = region(line, 0, len(line)) {
+        borrow k = region(neg_key, 0, len(neg_key)) {
+            neg = extract_json_int(&l, &k, 0);
+        }
+    }
+    assert neg == -42;
+    let broken = "{\"s\":\"unterminated";
+    let x = get_string(&broken, &key);
+    assert len(x) == 0;
+}

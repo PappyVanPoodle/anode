@@ -1,0 +1,699 @@
+// Anode 1.3.0 showcase. The original demo (structs, field-view contracts,
+// @effect verification, FNV-1a/SHA-256 builtins, big-endian wire framing,
+// loopback networking) plus the eight pure `.an` packages in ../../packages/
+// (cli, encoding, csv_jsonl, markdown, glob_regex, json, docgen, bench),
+// binary file I/O and the in-memory one-shot loopback server.
+// Subcommands: `doc [--out=PATH] [--packages=DIR]` and `bench [--samples=N]`.
+pub struct DocState {
+    tokens: int,
+    sentences: int,
+    cadence: int,
+    burstiness: int,
+    digest: u64
+}
+@effect(no_alloc, no_io, bounded)
+pub fn pass_cadence(s: &mut DocState.{ mut cadence, tokens, sentences }) -> int requires s.tokens >= 0 && s.tokens <= 1000000;
+requires s.sentences > 0;
+ensures result >= 0;
+{
+    s.cadence =(s.tokens * 1000) / s.sentences;
+    return s.cadence;
+}
+@effect(no_alloc, no_io, bounded)
+pub fn pass_burstiness(s: &mut DocState.{ mut burstiness, tokens, sentences }) -> int requires s.tokens >= s.sentences && s.tokens <= 1000000;
+requires s.sentences > 0;
+ensures result >= 0;
+{
+    s.burstiness =((s.tokens - s.sentences) * 1000) / s.sentences;
+    return s.burstiness;
+}
+@effect(no_alloc, no_io, bounded)
+pub fn encode_header(magic: u32, count: u32, hash: u64) -> [u8; 16] {
+    let mut buf = [u8(0); 16];
+    let ok0 = try_write_u32_be(buf, 0, magic);
+    let ok1 = try_write_u32_be(buf, 4, count);
+    let ok2 = try_write_u64_be(buf, 8, hash);
+    assert ok0 && ok1 && ok2;
+    return buf;
+}
+// Eight lowercase hex digits of a CRC-32.
+fn crc_hex(crc: u32) -> text {
+    let wide = encoding::hex_encode_u64(u64(crc));
+    return slice(wide, 8, 16);
+}
+fn crc_of_text(s: &text) -> u32 {
+    let mut crc = u32(0);
+    borrow v = region(s, 0, len(s)) {
+        crc = encoding::crc32_text(&v);
+    }
+    return crc;
+}
+fn process_argv() -> texts {
+    let mut raw = texts();
+    for i in 0..args_count() {
+        push(raw, arg(i));
+    }
+    return raw;
+}
+// Text value of `--key=value`, else `fallback`.
+fn flag_or(args: &cli::CliArgs, key: &text, fallback: &text) -> text {
+    let mut value = "";
+    borrow k = region(key, 0, len(key)) {
+        borrow f = region(fallback, 0, len(fallback)) {
+            value = cli::flag_value_or(&args, &k, &f);
+        }
+    }
+    return value;
+}
+// Process arguments, or a sample command line when none are given.
+fn demo_cli() {
+    let mut raw = process_argv();
+    if len(raw) == 0 {
+        raw = ["report", "--format=json", "-vv", "--", "notes.md", "data.csv"];
+    }
+    let args = cli::parse_args(&raw);
+    let format_key = "format";
+    let format_default = "text";
+    let verbose_key = "v";
+    let help_key = "help";
+    let mut format = "";
+    let mut verbosity = 0;
+    let mut wants_help = false;
+    borrow k = region(format_key, 0, len(format_key)) {
+        borrow d = region(format_default, 0, len(format_default)) {
+            format = cli::flag_value_or(&args, &k, &d);
+        }
+    }
+    borrow v = region(verbose_key, 0, len(verbose_key)) {
+        verbosity = cli::flag_count(&args, &v);
+    }
+    borrow h = region(help_key, 0, len(help_key)) {
+        wants_help = cli::has_flag(&args, &h);
+    }
+    print concat(concat(concat("cli: subcommand=", args.subcommand), " format="), concat(format, concat(" verbosity=", concat(int_text(verbosity), concat(" positionals=", text_join(args.positionals, ","))))));
+    if wants_help {
+        let mut specs = cli::FlagSpecs();
+        push(specs, cli::FlagSpec { key: "format", short: "", value_name: "FMT", help: "output format (text or json)" });
+        push(specs, cli::FlagSpec { key: "verbose", short: "v", value_name: "", help: "repeat for more detail" });
+        push(specs, cli::FlagSpec { key: "help", short: "h", value_name: "", help: "show this help" });
+        let program = "stdlib-showcase";
+        let about = "Showcase of the pure .an standard library packages.";
+        borrow p = region(program, 0, len(program)) {
+            borrow a = region(about, 0, len(about)) {
+                print cli::render_help(&p, &a, &specs);
+            }
+        }
+    }
+}
+fn demo_encoding() -> u32 {
+    let sample = "123456789";
+    let mut crc = u32(0);
+    let mut hex = "";
+    let mut b64 = "";
+    borrow s = region(sample, 0, len(sample)) {
+        crc = encoding::crc32_text(&s);
+        hex = encoding::hex_encode_text(&s);
+        b64 = encoding::base64_encode_text(&s);
+    }
+    assert crc == u32(3421780262);
+    let mut decoded = [u8(0); 16];
+    let mut n = 0;
+    borrow bv = region(b64, 0, len(b64)) {
+        borrow mut dst = region(decoded, 0, 16) {
+            n = encoding::try_base64_decode_into(&bv, &mut dst);
+        }
+    }
+    let mut same = false;
+    borrow got = region(decoded, 0, n) {
+        borrow want = region(sample, 0, len(sample)) {
+            same = encoding::bytes_eq_text(&got, &want);
+        }
+    }
+    assert same;
+    print concat(concat(concat("encoding: crc32=", crc_hex(crc)), concat(" hex=", hex)), concat(" base64=", b64));
+    return crc;
+}
+// Writes a packet with NUL and 0xFF bytes, reads it back and compares CRCs.
+fn demo_binary_io() {
+    let dir_ok = create_dir(".zenith");
+    let path = ".zenith/anode-demo-packet.bin";
+    let mut packet = [u8(0); 32];
+    let magic_ok = try_write_u32_be(packet, 0, u32(1095651140));
+    assert magic_ok;
+    for i in 4..32 {
+        set(packet, i, u8((i * 37) % 256));
+    }
+    set(packet, 5, u8(0));
+    set(packet, 6, u8(255));
+    let wrote = try_write_bytes(path, packet);
+    let mut back = [u8(0); 64];
+    let n = try_read_bytes(path, back);
+    let removed = remove_file(path);
+    if !dir_ok || !wrote || n != 32 || !removed {
+        print "binary io: failed";
+        return;
+    }
+    let mut crc_out = u32(0);
+    let mut crc_in = u32(0);
+    let mut hex = "";
+    borrow out = region(packet, 0, 32) {
+        crc_out = encoding::crc32_bytes(&out);
+    }
+    borrow got = region(back, 0, n) {
+        crc_in = encoding::crc32_bytes(&got);
+        hex = encoding::hex_encode_bytes(&got);
+    }
+    assert crc_in == crc_out;
+    let magic = read_u32_be(back, 0);
+    assert magic == u32(1095651140);
+    print concat(concat(concat("binary io: wrote+read ", int_text(n)), concat(" bytes crc32=", crc_hex(crc_in))), concat(" head=", slice(hex, 0, 16)));
+}
+fn demo_csv_jsonl() {
+    let row = "id,\"name, full\",\"quote \"\"x\"\"\",score";
+    let mut fields = texts();
+    borrow r = region(row, 0, len(row)) {
+        fields = csv_jsonl::parse_csv_line(&r);
+    }
+    assert len(fields) == 4;
+    print concat("csv: fields=", text_join(fields, " | "));
+    let log = "{\"level\":\"info\",\"msg\":\"started\",\"ms\":12}\n\n{\"level\":\"warn\",\"msg\":\"slow \\\"disk\\\"\",\"ms\":250}\n";
+    let mut lines = texts();
+    borrow l = region(log, 0, len(log)) {
+        lines = csv_jsonl::non_empty_lines(&l);
+    }
+    let msg_key = "msg";
+    let ms_key = "ms";
+    let mut total_ms = 0;
+    let mut messages = texts();
+    for i in 0..len(lines) {
+        let line = text_at(lines, i);
+        borrow lv = region(line, 0, len(line)) {
+            borrow mk = region(msg_key, 0, len(msg_key)) {
+                push(messages, csv_jsonl::extract_json_string(&lv, &mk));
+            }
+            borrow tk = region(ms_key, 0, len(ms_key)) {
+                total_ms = total_ms + csv_jsonl::extract_json_int(&lv, &tk, 0);
+            }
+        }
+    }
+    assert total_ms == 262;
+    print concat(concat(concat("jsonl: records=", int_text(len(lines))), concat(" total_ms=", int_text(total_ms))), concat(" msgs=", text_join(messages, " / ")));
+}
+fn demo_markdown() {
+    let doc = "# Release notes\n\nAnode 1.3 adds binary I/O. It also serves loopback requests!\n\n## Packages\n- encoding\n- cli and csv_jsonl\n  - nested: markdown\n\n```an\nlet x = 1;\n```\n";
+    let mut blocks = markdown::Blocks();
+    borrow d = region(doc, 0, len(doc)) {
+        blocks = markdown::scan_markdown(&d);
+    }
+    let mut words = 0;
+    let mut sentences = 0;
+    for b in &blocks {
+        words = words + b.words;
+        sentences = sentences + b.sentences;
+    }
+    let headings = markdown::count_kind(&blocks, 1);
+    let paragraphs = markdown::count_kind(&blocks, 2);
+    let code = markdown::count_kind(&blocks, 3);
+    let items = markdown::count_kind(&blocks, 4);
+    assert headings == 2 && paragraphs == 1 && code == 1 && items == 3;
+    let mut title = "";
+    borrow first = at(blocks, 0) {
+        title = slice(doc, first.start, first.end);
+    }
+    print concat(concat(concat("markdown: title=", title), concat(" blocks=", int_text(len(blocks)))), concat(concat(" words=", int_text(words)), concat(" sentences=", int_text(sentences))));
+}
+fn demo_glob_regex() {
+    let paths = ["src/main.an", "packages/json/src/lib.an", "packages/json/Anode.toml", "README.md", "packages/cli/src/lib.an"];
+    let glob = "packages/*/src/[a-z]*.an";
+    let anchored = "^packages/c.i/";
+    let mut matched = texts();
+    let mut anchored_hits = 0;
+    for i in 0..len(paths) {
+        let p = text_at(paths, i);
+        let mut hit = false;
+        let mut at_start = -1;
+        borrow pv = region(p, 0, len(p)) {
+            borrow gv = region(glob, 0, len(glob)) {
+                hit = glob_regex::glob_match(&gv, &pv);
+            }
+            borrow av = region(anchored, 0, len(anchored)) {
+                at_start = glob_regex::find_subpattern(&av, &pv);
+            }
+        }
+        if at_start == 0 {
+            anchored_hits = anchored_hits + 1;
+        }
+        if hit {
+            push(matched, p);
+        }
+    }
+    assert len(matched) == 2 && anchored_hits == 1;
+    print concat(concat(concat("glob: ", glob), concat(" -> ", text_join(matched, ", "))), concat(" | regex ^packages/c.i/ hits=", int_text(anchored_hits)));
+}
+fn demo_json() {
+    let src = "{\"service\":\"ghosthand\",\"port\":8080,\"routes\":[\"/health\",\"/v1/run\"],\"limits\":{\"depth\":128,\"strict\":true}}";
+    let mut parsed = json::JsonParse::Err("unparsed");
+    borrow s = region(src, 0, len(src)) {
+        parsed = json::parse_json(&s);
+    }
+    match parsed {
+        json::JsonParse::Ok(doc) => {
+            let depth_path = "limits.depth";
+            let route_path = "routes.1";
+            let routes_key = "routes";
+            let mut depth = -1;
+            let mut route = "";
+            let mut route_count = -1;
+            borrow dp = region(depth_path, 0, len(depth_path)) {
+                depth = json::node_int(&doc, json::query_path(&doc, &dp));
+            }
+            borrow rp = region(route_path, 0, len(route_path)) {
+                route = json::node_text(&doc, json::query_path(&doc, &rp));
+            }
+            borrow rk = region(routes_key, 0, len(routes_key)) {
+                route_count = json::array_len(&doc, json::object_get(&doc, doc.root, &rk));
+            }
+            assert depth == 128 && route_count == 2;
+            let rendered = json::render_json(&doc);
+            let same = text_eq(rendered, src);
+            assert same;
+            print concat(concat(concat("json: nodes=", int_text(json::node_count(&doc))), concat(" limits.depth=", int_text(depth))), concat(concat(" routes[1]=", route), " round-trip=ok"));
+        }
+        json::JsonParse::Err(message) => {
+            print concat("json error: ", message);
+        }
+    }
+}
+// The in-memory serve route echoes its payload as the request body.
+fn demo_serve(crc: u32) {
+    let payload = concat("crc32-", crc_hex(crc));
+    let endpoint = concat("loopback://serve/", payload);
+    match net_serve_once(endpoint, 201, "accepted") {
+        NetResult::Response(reply) => {
+            assert reply.status == 201;
+            let same = text_eq(reply.body, payload);
+            assert same;
+            print concat(concat("net_serve_once: status=", int_text(reply.status)), concat(" body=", reply.body));
+        }
+        NetResult::Error(err) => {
+            print concat("net_serve_once error: ", err);
+        }
+    }
+}
+// `doc`: documents every package under `--packages` (default ../../packages/) into one Markdown file.
+fn demo_docgen(args: &cli::CliArgs) {
+    let out_key = "out";
+    let out_default = ".zenith/API-DOCS.md";
+    let out_path = flag_or(&args, &out_key, &out_default);
+    let root_key = "packages";
+    let root_default = "../../packages";
+    let packages_root = flag_or(&args, &root_key, &root_default);
+    let modules = ["encoding", "cli", "csv_jsonl", "markdown", "glob_regex", "json", "docgen", "bench"];
+    let mut index = texts();
+    let mut bodies = texts();
+    let mut counts = texts();
+    let mut total = 0;
+    push(index, "# Anode package API reference");
+    push(index, "");
+    push(index, "Generated by `anode run . -- doc` with the pure-`.an` `docgen` package.");
+    push(index, "");
+    push(index, "| Module | Public items |");
+    push(index, "| --- | ---: |");
+    for i in 0..len(modules) {
+        let name = text_at(modules, i);
+        let path = concat(concat(concat(packages_root, "/"), name), "/src/lib.an");
+        match try_read_text(path) {
+            ReadResult::Ok(source) => {
+                let mut doc = docgen::ModuleDoc { module_name: "", summary: "", items: docgen::DocItems() };
+                borrow nv = region(name, 0, len(name)) {
+                    borrow sv = region(source, 0, len(source)) {
+                        doc = docgen::extract_module_docs(&nv, &sv);
+                    }
+                }
+                let n = len(doc.items);
+                total = total + n;
+                push(index, concat(concat(concat(concat(concat(concat("| [`", name), "`](#"), name), "-api-reference) | "), int_text(n)), " |"));
+                push(counts, concat(concat(name, "="), int_text(n)));
+                push(bodies, docgen::render_module_markdown(&doc));
+            }
+            ReadResult::Err(message) => {
+                print concat(concat(concat("docgen: cannot read ", path), ": "), message);
+            }
+        }
+    }
+    let combined = concat(concat(text_join(index, "\n"), "\n\n---\n\n"), text_join(bodies, "\n---\n\n"));
+    let dir_ok = create_dir(".zenith");
+    match try_write_text(out_path, combined) {
+        WriteResult::Ok => {
+            print concat(concat(concat(concat(concat("docgen: ", int_text(len(counts))), " modules, "), int_text(total)), " public items -> "), concat(concat(out_path, " ("), concat(text_join(counts, " "), ")")));
+        }
+        WriteResult::Err(message) => {
+            print concat("docgen: write failed: ", message);
+        }
+    }
+}
+struct BenchPath {
+    path: text
+}
+vector BenchPaths(BenchPath);
+struct Fixtures {
+    crc_input: text,
+    glob_pattern: text,
+    paths: BenchPaths,
+    json_src: text
+}
+fn bench_fixtures() -> Fixtures {
+    let mut chunks = texts();
+    for i in 0..64 {
+        push(chunks, "Anode packages are pure, bounded and allocation-aware.\n");
+    }
+    let mut paths = BenchPaths();
+    let names = ["src/main.an", "packages/json/src/lib.an", "packages/cli/src/lib.an", "packages/json/Anode.toml", "packages/markdown/src/lib.an", "README.md", "packages/glob_regex/src/lib.an", "packages/bench/src/Lib.an"];
+    for j in 0..len(names) {
+        push(paths, BenchPath { path: text_at(names, j) });
+    }
+    let json_src = "{\"service\":\"ghosthand\",\"port\":8080,\"debug\":false,\"routes\":[{\"path\":\"/health\",\"methods\":[\"GET\"],\"auth\":null},{\"path\":\"/v1/run\",\"methods\":[\"POST\",\"PUT\"],\"limits\":{\"depth\":128,\"bytes\":1048576}}],\"tags\":[\"fast\",\"safe\",\"pure\"],\"notes\":\"escaped \\\"quote\\\" and \\u00e9\"}";
+    return Fixtures { crc_input: text_join(chunks, ""), glob_pattern: "packages/*/src/[a-z]*.an", paths: paths, json_src: json_src };
+}
+// Runs one workload `iterations` times; the checksum proves the work happened.
+fn run_workload(kind: int, iterations: int, fx: &Fixtures) -> u64 {
+    let mut acc = u64(0);
+    if kind == 0 {
+        borrow v = region(fx.crc_input, 0, len(fx.crc_input)) {
+            for i in 0..iterations {
+                acc = wrapping_add(acc, u64(encoding::crc32_text(&v)));
+            }
+        }
+    } else if kind == 1 {
+        borrow p = region(fx.glob_pattern, 0, len(fx.glob_pattern)) {
+            for i in 0..iterations {
+                for item in &fx.paths {
+                    borrow t = region(item.path, 0, len(item.path)) {
+                        if glob_regex::glob_match(&p, &t) {
+                            acc = wrapping_add(acc, u64(1));
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        borrow s = region(fx.json_src, 0, len(fx.json_src)) {
+            for i in 0..iterations {
+                match json::parse_json(&s) {
+                    json::JsonParse::Ok(doc) => {
+                        acc = wrapping_add(acc, u64(json::node_count(&doc)));
+                    }
+                    json::JsonParse::Err(message) => {}
+                }
+            }
+        }
+    }
+    return acc;
+}
+fn empty_stat() -> bench::BenchStat {
+    return bench::BenchStat { name: "", iterations: 0, samples: 0, min_us: 0, median_us: 0, max_us: 0, p95_us: 0, total_ms: 0, checksum: u64(0) };
+}
+// Doubles the batch size until one batch takes `target_ms`, then times `samples` batches.
+fn measure(kind: int, name: &text, fx: &Fixtures, samples: int, target_ms: int) -> bench::BenchStat {
+    let mut iterations = 1;
+    while iterations < 1048576 {
+        let t0 = monotonic_ms();
+        let warm = run_workload(kind, iterations, &fx);
+        if monotonic_ms() - t0 >= target_ms {
+            break;
+        }
+        iterations = iterations * 2;
+    }
+    let mut times = [];
+    let mut checksum = u64(0);
+    for round in 0..samples {
+        let t0 = monotonic_ms();
+        checksum = run_workload(kind, iterations, &fx);
+        push(times,(monotonic_ms() - t0) * 1000);
+    }
+    let mut stat = empty_stat();
+    borrow nv = region(name, 0, len(name)) {
+        stat = bench::compute_stats(&nv, iterations, &times, checksum);
+    }
+    return stat;
+}
+// Smallest observable step of monotonic_ms().
+fn clock_tick_ms() -> int {
+    let a = monotonic_ms();
+    let mut b = a;
+    while b == a {
+        b = monotonic_ms();
+    }
+    let mut c = b;
+    while c == b {
+        c = monotonic_ms();
+    }
+    return c - b;
+}
+fn ns_per_run(stat: &bench::BenchStat) -> int {
+    if stat.iterations == 0 {
+        return 0;
+    }
+    return stat.median_us * 1000 / stat.iterations;
+}
+// `bench`: times encoding, glob_regex and json workloads and writes Markdown and JSON receipts.
+fn demo_bench(args: &cli::CliArgs) {
+    let samples_key = "samples";
+    let samples_default = "9";
+    let samples_text = flag_or(&args, &samples_key, &samples_default);
+    let mut samples = 9;
+    if is_int(samples_text) {
+        samples = parse_int(samples_text);
+    }
+    if samples < 1 || samples > 1000 {
+        samples = 9;
+    }
+    let target_ms = 20;
+    let fx = bench_fixtures();
+    let crc_name = concat(concat("encoding::crc32_text/", int_text(len(fx.crc_input))), "B");
+    let glob_name = concat(concat("glob_regex::glob_match/", int_text(len(fx.paths))), "paths");
+    let json_name = concat(concat("json::parse_json/", int_text(len(fx.json_src))), "B");
+    let mut rows = bench::BenchStats();
+    push(rows, measure(0, &crc_name, &fx, samples, target_ms));
+    push(rows, measure(1, &glob_name, &fx, samples, target_ms));
+    push(rows, measure(2, &json_name, &fx, samples, target_ms));
+    let suite = "an-program packages";
+    let mut md = "";
+    let mut receipt = "";
+    borrow sv = region(suite, 0, len(suite)) {
+        md = bench::render_bench_markdown(&sv, &rows);
+        receipt = bench::render_bench_json(&sv, &rows);
+    }
+    // The receipt must be valid JSON that agrees with the first row.
+    let mut receipt_ok = false;
+    let mut parsed = json::JsonParse::Err("unparsed");
+    borrow rv = region(receipt, 0, len(receipt)) {
+        parsed = json::parse_json(&rv);
+    }
+    match parsed {
+        json::JsonParse::Ok(doc) => {
+            let median_path = "workloads.0.median_us";
+            borrow mp = region(median_path, 0, len(median_path)) {
+                borrow first = at(rows, 0) {
+                    receipt_ok = json::node_int(&doc, json::query_path(&doc, &mp)) == first.median_us;
+                }
+            }
+        }
+        json::JsonParse::Err(message) => {
+            print concat("bench: receipt is not valid JSON: ", message);
+        }
+    }
+    assert receipt_ok;
+    let tick = clock_tick_ms();
+    let note = concat(concat(concat("Clock: `monotonic_ms()` with an observed tick of ", int_text(tick)), " ms. Batch sizes double until one batch takes at least "), concat(int_text(target_ms), " ms, so each sample is a whole number of milliseconds reported in microseconds.\n"));
+    let report = concat(concat(md, "\n"), note);
+    let dir_ok = create_dir(".zenith");
+    let md_path = ".zenith/BENCHMARK.md";
+    let json_path = ".zenith/BENCHMARK.json";
+    let mut written = 0;
+    match try_write_text(md_path, report) {
+        WriteResult::Ok => {
+            written = written + 1;
+        }
+        WriteResult::Err(message) => {
+            print concat("bench: write failed: ", message);
+        }
+    }
+    match try_write_text(json_path, receipt) {
+        WriteResult::Ok => {
+            written = written + 1;
+        }
+        WriteResult::Err(message) => {
+            print concat("bench: write failed: ", message);
+        }
+    }
+    let mut parts = texts();
+    for row in &rows {
+        push(parts, concat(concat(concat(concat(concat(row.name, " x"), int_text(row.iterations)), " median "), int_text(row.median_us)), concat(concat("us (", int_text(ns_per_run(&row))), " ns/run)")));
+    }
+    print concat(concat(concat("bench: ", text_join(parts, "; ")), concat(" | tick ", int_text(tick))), concat(concat("ms | wrote ", int_text(written)), " files: .zenith/BENCHMARK.md, .zenith/BENCHMARK.json"));
+}
+fn main() {
+    let raw = process_argv();
+    let args = cli::parse_args(&raw);
+    if text_eq(args.subcommand, "doc") {
+        demo_docgen(&args);
+        return;
+    }
+    if text_eq(args.subcommand, "bench") {
+        demo_bench(&args);
+        return;
+    }
+    let sample = "Anode 1.3.0 compiles in milliseconds and runs faster than Rust.";
+    let hash = fnv1a_64(sample);
+    let sha = sha256_text(sample);
+    let mut state = DocState { tokens: 10, sentences: 2, cadence: 0, burstiness: 0, digest: hash };
+    let c = pass_cadence(&mut state);
+    let b = pass_burstiness(&mut state);
+    let header = encode_header(u32(1095651140), u32(state.tokens), state.digest);
+    let decoded_hash = read_u64_be(header, 8);
+    assert decoded_hash == hash;
+    print concat("cadence=", concat(int_text(c), concat(" burstiness=", int_text(b))));
+    print concat("sha256=", sha);
+    match net_request("loopback://sha256", sample) {
+        NetResult::Response(reply) => {
+            assert reply.status == 200;
+            assert text_eq(reply.body, sha);
+            print "loopback://sha256 verified: ok";
+        }
+        NetResult::Error(err) => {
+            print concat("net error: ", err);
+        }
+    }
+    demo_cli();
+    let crc = demo_encoding();
+    demo_binary_io();
+    demo_csv_jsonl();
+    demo_markdown();
+    demo_glob_regex();
+    demo_json();
+    demo_serve(crc);
+    demo_docgen(&args);
+    demo_bench(&args);
+}
+test field_views_wire_framing_and_crypto_builtins() {
+    let payload = "ghosthand-kernel-check";
+    let h = fnv1a_64(payload);
+    let mut s = DocState { tokens: 24, sentences: 3, cadence: 0, burstiness: 0, digest: h };
+    let c = pass_cadence(&mut s);
+    let b = pass_burstiness(&mut s);
+    assert c == 8000;
+    assert b == 7000;
+    let pkt = encode_header(u32(7), u32(24), h);
+    let m = read_u32_be(pkt, 0);
+    let cnt = read_u32_be(pkt, 4);
+    let digest = read_u64_be(pkt, 8);
+    assert m == u32(7);
+    assert cnt == u32(24);
+    assert digest == h;
+}
+test packages_compose_across_boundaries() {
+    // A CSV row becomes JSON text, which must parse, render identically and checksum stably.
+    let row = "alpha,\"b, c\"";
+    let mut fields = texts();
+    borrow r = region(row, 0, len(row)) {
+        fields = csv_jsonl::parse_csv_line(&r);
+    }
+    let doc_src = concat(concat("[\"", text_join(fields, "\",\"")), "\"]");
+    let mut parsed = json::JsonParse::Err("unparsed");
+    borrow s = region(doc_src, 0, len(doc_src)) {
+        parsed = json::parse_json(&s);
+    }
+    match parsed {
+        json::JsonParse::Ok(doc) => {
+            let n = json::array_len(&doc, doc.root);
+            assert n == 2;
+            let rendered = json::render_json(&doc);
+            let same = text_eq(rendered, "[\"alpha\",\"b, c\"]");
+            assert same;
+            let crc_a = crc_of_text(&rendered);
+            let crc_b = crc_of_text(&doc_src);
+            assert crc_a == crc_b;
+        }
+        json::JsonParse::Err(message) => {
+            print message;
+            assert false;
+        }
+    }
+    let pattern = "*.an";
+    let target = "lib.an";
+    let mut hit = false;
+    borrow pv = region(pattern, 0, len(pattern)) {
+        borrow tv = region(target, 0, len(target)) {
+            hit = glob_regex::glob_match(&pv, &tv);
+        }
+    }
+    assert hit;
+}
+test bench_receipt_is_valid_json() {
+    let name = "crc32_text";
+    let times = [3000, 1000, 2000];
+    let mut stat = empty_stat();
+    borrow nv = region(name, 0, len(name)) {
+        stat = bench::compute_stats(&nv, 8, &times, u64(3421780262));
+    }
+    let mut rows = bench::BenchStats();
+    push(rows, stat);
+    let suite = "unit";
+    let mut receipt = "";
+    borrow sv = region(suite, 0, len(suite)) {
+        receipt = bench::render_bench_json(&sv, &rows);
+    }
+    let mut parsed = json::JsonParse::Err("unparsed");
+    borrow rv = region(receipt, 0, len(receipt)) {
+        parsed = json::parse_json(&rv);
+    }
+    match parsed {
+        json::JsonParse::Ok(doc) => {
+            let median_path = "workloads.0.median_us";
+            let checksum_path = "workloads.0.checksum";
+            let suite_path = "suite";
+            let mut median = 0;
+            let mut checksum = "";
+            let mut suite_name = "";
+            borrow mp = region(median_path, 0, len(median_path)) {
+                median = json::node_int(&doc, json::query_path(&doc, &mp));
+            }
+            borrow cp = region(checksum_path, 0, len(checksum_path)) {
+                checksum = json::node_text(&doc, json::query_path(&doc, &cp));
+            }
+            borrow sp = region(suite_path, 0, len(suite_path)) {
+                suite_name = json::node_text(&doc, json::query_path(&doc, &sp));
+            }
+            assert median == 2000;
+            let checksum_ok = text_eq(checksum, "0x00000000cbf43926");
+            let suite_ok = text_eq(suite_name, "unit");
+            assert checksum_ok && suite_ok;
+        }
+        json::JsonParse::Err(message) => {
+            print message;
+            assert false;
+        }
+    }
+}
+test docgen_reference_scans_as_markdown() {
+    let name = "tiny";
+    let source = "// Tiny module.\n\n// Adds one.\n@effect(no_alloc, no_io, bounded)\npub fn inc(x: int) -> int requires x < 100;\n{\n    return x + 1;\n}\npub vector Nums(int);\n";
+    let mut doc = docgen::ModuleDoc { module_name: "", summary: "", items: docgen::DocItems() };
+    borrow nv = region(name, 0, len(name)) {
+        borrow sv = region(source, 0, len(source)) {
+            doc = docgen::extract_module_docs(&nv, &sv);
+        }
+    }
+    assert len(doc.items) == 2;
+    let md = docgen::render_module_markdown(&doc);
+    let mut blocks = markdown::Blocks();
+    borrow mv = region(md, 0, len(md)) {
+        blocks = markdown::scan_markdown(&mv);
+    }
+    let headings = markdown::count_kind(&blocks, 1);
+    let fences = markdown::count_kind(&blocks, 3);
+    assert headings == 5 && fences == 2;
+    let contract_listed = contains(md, "- `requires x < 100`");
+    assert contract_listed;
+}

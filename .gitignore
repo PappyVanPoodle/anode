@@ -1,0 +1,5 @@
+# Build output from anode check/test/run
+.zenith/
+
+# The SDK zip is a GitHub Release asset, not repository content
+*.zip

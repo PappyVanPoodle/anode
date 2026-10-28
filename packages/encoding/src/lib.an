@@ -1,0 +1,445 @@
+// encoding: IEEE 802.3 CRC-32, RFC 4648 base16 (hex) and base64.
+// Checksums and decoders are no_alloc/no_io/bounded and write into
+// caller-owned byte buffers; encoders allocate exactly one output text.
+// ---------------------------------------------------------------- CRC-32
+// Reflected polynomial 0xEDB88320 and the 0xFFFFFFFF init/final mask.
+@effect(no_alloc, no_io, bounded)
+pub fn crc32_update(crc: u32, byte: int) -> u32 {
+    let mut c = bit_xor(crc, u32(bit_and(byte, 255)));
+    for bit in 0..8 {
+        if bit_and(c, u32(1)) == u32(1) {
+            c = bit_xor(shr(c, 1), u32(3988292384));
+        } else {
+            c = shr(c, 1);
+        }
+    }
+    return c;
+}
+@effect(no_alloc, no_io, bounded)
+pub fn crc32_bytes(data: &[u8]) -> u32 {
+    let mut crc = u32(4294967295);
+    for i in 0..len(data) {
+        crc = crc32_update(crc, int(at(data, i)));
+    }
+    return bit_xor(crc, u32(4294967295));
+}
+@effect(no_alloc, no_io, bounded)
+pub fn crc32_text(s: &str) -> u32 {
+    let mut crc = u32(4294967295);
+    for i in 0..len(s) {
+        crc = crc32_update(crc, byte_at(s, i));
+    }
+    return bit_xor(crc, u32(4294967295));
+}
+// ---------------------------------------------------------------- byte helpers
+// Copies the UTF-8 bytes of `s` into `dst[0..len(s)]`; -1 (dst unchanged) if it does not fit.
+@effect(no_alloc, no_io, bounded)
+pub fn try_copy_text_into(s: &str, dst: &mut [u8]) -> int {
+    if len(s) > len(dst) {
+        return -1;
+    }
+    for i in 0..len(s) {
+        set(dst, i, u8(byte_at(s, i)));
+    }
+    return len(s);
+}
+@effect(no_alloc, no_io, bounded)
+pub fn bytes_eq_text(data: &[u8], s: &str) -> bool {
+    if len(data) != len(s) {
+        return false;
+    }
+    for i in 0..len(s) {
+        if int(at(data, i)) != byte_at(s, i) {
+            return false;
+        }
+    }
+    return true;
+}
+// ---------------------------------------------------------------- base16 (hex)
+// Value of an ASCII hex digit (either case), or -1.
+@effect(no_alloc, no_io, bounded)
+pub fn hex_digit_value(c: int) -> int {
+    if c >= 48 && c <= 57 {
+        return c - 48;
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87;
+    }
+    if c >= 65 && c <= 70 {
+        return c - 55;
+    }
+    return -1;
+}
+@effect(no_io, bounded)
+fn hex_char(nibble: int) -> text {
+    let digits = "0123456789abcdef";
+    return slice(digits, nibble, nibble + 1);
+}
+// Lowercase hex, two digits per byte.
+@effect(no_io, bounded)
+pub fn hex_encode_bytes(data: &[u8]) -> text {
+    let mut parts = texts();
+    for i in 0..len(data) {
+        let b = int(at(data, i));
+        push(parts, hex_char(b / 16));
+        push(parts, hex_char(b % 16));
+    }
+    return text_join(parts, "");
+}
+@effect(no_io, bounded)
+pub fn hex_encode_text(s: &str) -> text {
+    let mut parts = texts();
+    for i in 0..len(s) {
+        let b = byte_at(s, i);
+        push(parts, hex_char(b / 16));
+        push(parts, hex_char(b % 16));
+    }
+    return text_join(parts, "");
+}
+// Fixed-width 16 digits, most significant nibble first.
+@effect(no_io, bounded)
+pub fn hex_encode_u64(val: u64) -> text {
+    let mut parts = texts();
+    for i in 0..16 {
+        let nibble = int(bit_and(shr(val, 60 - i * 4), u64(15)));
+        push(parts, hex_char(nibble));
+    }
+    return text_join(parts, "");
+}
+// Decodes into dst[0..n] and returns n. Returns -1 with dst unchanged on an
+// odd length, a non-hex digit, or output larger than dst.
+@effect(no_alloc, no_io, bounded)
+pub fn try_hex_decode_into(hex: &str, dst: &mut [u8]) -> int {
+    let n = len(hex);
+    if n % 2 != 0 {
+        return -1;
+    }
+    let out = n / 2;
+    if out > len(dst) {
+        return -1;
+    }
+    for i in 0..n {
+        if hex_digit_value(byte_at(hex, i)) < 0 {
+            return -1;
+        }
+    }
+    for j in 0..out {
+        let hi = hex_digit_value(byte_at(hex, j * 2));
+        let lo = hex_digit_value(byte_at(hex, j * 2 + 1));
+        set(dst, j, u8(hi * 16 + lo));
+    }
+    return out;
+}
+// ---------------------------------------------------------------- base64
+@effect(no_io, bounded)
+fn b64_char(v: int) -> text {
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    return slice(alphabet, v, v + 1);
+}
+// Value of a standard-alphabet base64 symbol, or -1 (including for '=').
+@effect(no_alloc, no_io, bounded)
+pub fn b64_value(c: int) -> int {
+    if c >= 65 && c <= 90 {
+        return c - 65;
+    }
+    if c >= 97 && c <= 122 {
+        return c - 71;
+    }
+    if c >= 48 && c <= 57 {
+        return c + 4;
+    }
+    if c == 43 {
+        return 62;
+    }
+    if c == 47 {
+        return 63;
+    }
+    return -1;
+}
+// Appends one output quantum for `count` (1..=3) input bytes, padding with '='.
+@effect(no_io, bounded)
+fn push_b64_group(parts: &mut texts, b0: int, b1: int, b2: int, count: int) {
+    let triple = b0 * 65536 + b1 * 256 + b2;
+    push(parts, b64_char(triple / 262144));
+    push(parts, b64_char((triple / 4096) % 64));
+    if count >= 2 {
+        push(parts, b64_char((triple / 64) % 64));
+    } else {
+        push(parts, "=");
+    }
+    if count == 3 {
+        push(parts, b64_char(triple % 64));
+    } else {
+        push(parts, "=");
+    }
+}
+@effect(no_io, bounded)
+pub fn base64_encode_bytes(data: &[u8]) -> text {
+    let mut parts = texts();
+    let n = len(data);
+    let full = n / 3;
+    for g in 0..full {
+        push_b64_group(&mut parts, int(at(data, g * 3)), int(at(data, g * 3 + 1)), int(at(data, g * 3 + 2)), 3);
+    }
+    let rem = n - full * 3;
+    if rem == 1 {
+        push_b64_group(&mut parts, int(at(data, n - 1)), 0, 0, 1);
+    } else if rem == 2 {
+        push_b64_group(&mut parts, int(at(data, n - 2)), int(at(data, n - 1)), 0, 2);
+    }
+    return text_join(parts, "");
+}
+@effect(no_io, bounded)
+pub fn base64_encode_text(s: &str) -> text {
+    let mut parts = texts();
+    let n = len(s);
+    let full = n / 3;
+    for g in 0..full {
+        push_b64_group(&mut parts, byte_at(s, g * 3), byte_at(s, g * 3 + 1), byte_at(s, g * 3 + 2), 3);
+    }
+    let rem = n - full * 3;
+    if rem == 1 {
+        push_b64_group(&mut parts, byte_at(s, n - 1), 0, 0, 1);
+    } else if rem == 2 {
+        push_b64_group(&mut parts, byte_at(s, n - 2), byte_at(s, n - 1), 0, 2);
+    }
+    return text_join(parts, "");
+}
+// Strict RFC 4648 decoding: length must be a multiple of 4, '=' only as final
+// padding, and unused padding bits must be zero. Returns the decoded length,
+// or -1 with dst unchanged on invalid input or output larger than dst.
+@effect(no_alloc, no_io, bounded)
+pub fn try_base64_decode_into(b64: &str, dst: &mut [u8]) -> int {
+    let n = len(b64);
+    if n % 4 != 0 {
+        return -1;
+    }
+    if n == 0 {
+        return 0;
+    }
+    let mut pad = 0;
+    if byte_at(b64, n - 1) == 61 {
+        pad = 1;
+        if byte_at(b64, n - 2) == 61 {
+            pad = 2;
+        }
+    }
+    for i in 0..n - pad {
+        if b64_value(byte_at(b64, i)) < 0 {
+            return -1;
+        }
+    }
+    if pad == 2 && b64_value(byte_at(b64, n - 3)) % 16 != 0 {
+        return -1;
+    }
+    if pad == 1 && b64_value(byte_at(b64, n - 2)) % 4 != 0 {
+        return -1;
+    }
+    let out =(n / 4) * 3 - pad;
+    if out > len(dst) {
+        return -1;
+    }
+    let groups = n / 4;
+    let mut w = 0;
+    for g in 0..groups {
+        let base = g * 4;
+        let last = g == groups - 1;
+        let v0 = b64_value(byte_at(b64, base));
+        let v1 = b64_value(byte_at(b64, base + 1));
+        let mut v2 = 0;
+        let mut v3 = 0;
+        if !(last && pad == 2) {
+            v2 = b64_value(byte_at(b64, base + 2));
+        }
+        if !(last && pad >= 1) {
+            v3 = b64_value(byte_at(b64, base + 3));
+        }
+        let triple = v0 * 262144 + v1 * 4096 + v2 * 64 + v3;
+        set(dst, w, u8(triple / 65536));
+        w = w + 1;
+        if w < out {
+            set(dst, w, u8((triple / 256) % 256));
+            w = w + 1;
+        }
+        if w < out {
+            set(dst, w, u8(triple % 256));
+            w = w + 1;
+        }
+    }
+    return out;
+}
+// Library packages carry an empty entry point so `anode check <package>` accepts them.
+fn main() {}
+// ---------------------------------------------------------------- tests
+fn crc_of(s: &text) -> u32 {
+    let mut c = u32(0);
+    borrow v = region(s, 0, len(s)) {
+        c = crc32_text(&v);
+    }
+    return c;
+}
+fn b64_of(s: &text) -> text {
+    let mut buf = [u8(0); 64];
+    let mut n = 0;
+    borrow v = region(s, 0, len(s)) {
+        borrow mut w = region(buf, 0, 64) {
+            n = try_copy_text_into(&v, &mut w);
+        }
+    }
+    let mut out = "";
+    borrow r = region(buf, 0, n) {
+        out = base64_encode_bytes(&r);
+    }
+    return out;
+}
+// Decodes `b64` and compares against `want`; -2 means decode succeeded with different bytes.
+fn b64_roundtrip(b64: &text, want: &text) -> int {
+    let mut buf = [u8(0); 64];
+    let mut n = 0;
+    borrow v = region(b64, 0, len(b64)) {
+        borrow mut w = region(buf, 0, 64) {
+            n = try_base64_decode_into(&v, &mut w);
+        }
+    }
+    if n < 0 {
+        return n;
+    }
+    let mut same = false;
+    borrow r = region(buf, 0, n) {
+        borrow wv = region(want, 0, len(want)) {
+            same = bytes_eq_text(&r, &wv);
+        }
+    }
+    if !same {
+        return -2;
+    }
+    return n;
+}
+fn hex_decode_len(hex: &text, capacity: int) -> int {
+    let mut buf = [u8(0); 32];
+    let mut n = 0;
+    borrow v = region(hex, 0, len(hex)) {
+        borrow mut w = region(buf, 0, capacity) {
+            n = try_hex_decode_into(&v, &mut w);
+        }
+    }
+    return n;
+}
+test crc32_ieee_check_values() {
+    let check = "123456789";
+    let c = crc_of(&check);
+    assert c == u32(3421780262);
+    let empty = "";
+    let e = crc_of(&empty);
+    assert e == u32(0);
+    let fox = "The quick brown fox jumps over the lazy dog";
+    let f = crc_of(&fox);
+    assert f == u32(1095738169);
+}
+test crc32_bytes_matches_text() {
+    let check = "123456789";
+    let mut buf = [u8(0); 16];
+    let mut n = 0;
+    borrow v = region(check, 0, len(check)) {
+        borrow mut w = region(buf, 0, 16) {
+            n = try_copy_text_into(&v, &mut w);
+        }
+    }
+    assert n == 9;
+    let mut c = u32(0);
+    borrow r = region(buf, 0, n) {
+        c = crc32_bytes(&r);
+    }
+    assert c == u32(3421780262);
+}
+test rfc4648_base16_vectors() {
+    let foobar = "foobar";
+    let mut lower = "";
+    borrow v = region(foobar, 0, len(foobar)) {
+        lower = hex_encode_text(&v);
+    }
+    let ok_lower = text_eq(lower, "666f6f626172");
+    assert ok_lower;
+    let upper = "666F6F626172";
+    let mut buf = [u8(0); 8];
+    let mut n = 0;
+    borrow hv = region(upper, 0, len(upper)) {
+        borrow mut w = region(buf, 0, 8) {
+            n = try_hex_decode_into(&hv, &mut w);
+        }
+    }
+    assert n == 6;
+    let mut same = false;
+    let mut again = "";
+    borrow r = region(buf, 0, n) {
+        borrow fv = region(foobar, 0, len(foobar)) {
+            same = bytes_eq_text(&r, &fv);
+        }
+        again = hex_encode_bytes(&r);
+    }
+    assert same;
+    let ok_again = text_eq(again, "666f6f626172");
+    assert ok_again;
+}
+test hex_u64_and_invalid_inputs() {
+    let h = hex_encode_u64(u64(3735928559));
+    let ok_h = text_eq(h, "00000000deadbeef");
+    assert ok_h;
+    let zero = hex_encode_u64(u64(0));
+    let ok_zero = text_eq(zero, "0000000000000000");
+    assert ok_zero;
+    let odd = "abc";
+    let n_odd = hex_decode_len(&odd, 32);
+    assert n_odd == -1;
+    let bad = "zz";
+    let n_bad = hex_decode_len(&bad, 32);
+    assert n_bad == -1;
+    let big = "00112233";
+    let n_big = hex_decode_len(&big, 2);
+    assert n_big == -1;
+    let fits = "00112233";
+    let n_fits = hex_decode_len(&fits, 4);
+    assert n_fits == 4;
+    let none = "";
+    let n_none = hex_decode_len(&none, 0);
+    assert n_none == 0;
+}
+test rfc4648_base64_vectors() {
+    let inputs = ["", "f", "fo", "foo", "foob", "fooba", "foobar"];
+    let expected = ["", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy"];
+    for i in 0..len(inputs) {
+        let input = text_at(inputs, i);
+        let want = text_at(expected, i);
+        let got = b64_of(&input);
+        let same = text_eq(got, want);
+        assert same;
+        let mut via_text = "";
+        borrow iv = region(input, 0, len(input)) {
+            via_text = base64_encode_text(&iv);
+        }
+        let same_text = text_eq(via_text, want);
+        assert same_text;
+        let decoded = b64_roundtrip(&want, &input);
+        assert decoded == len(input);
+    }
+}
+test base64_rejects_malformed_input() {
+    let bad = ["Zg=", "Zg=a", "Z===", "Zm9v!A==", "Zh==", "Zm9=", "=Zm9"];
+    let want = "";
+    for i in 0..len(bad) {
+        let b = text_at(bad, i);
+        let n = b64_roundtrip(&b, &want);
+        assert n == -1;
+    }
+    let big = "Zm9vYmFy";
+    let mut small = [u8(0); 4];
+    let mut n_small = 0;
+    borrow v = region(big, 0, len(big)) {
+        borrow mut w = region(small, 0, 4) {
+            n_small = try_base64_decode_into(&v, &mut w);
+        }
+    }
+    assert n_small == -1;
+    let untouched = at(small, 0);
+    assert untouched == u8(0);
+}

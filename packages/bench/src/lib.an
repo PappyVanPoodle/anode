@@ -1,0 +1,261 @@
+// bench: order statistics over timing samples and deterministic Markdown/JSON
+// reports. Timing itself is I/O, so callers measure (for example with
+// `monotonic_ms()`) and hand this package the samples.
+//
+// Each sample is the elapsed time in microseconds of one batch of
+// `iterations` runs. Percentiles use the nearest-rank method on a sorted
+// copy; an even sample count takes the lower-rounded mean of the two middle
+// values as the median.
+pub struct BenchStat {
+    name: text,
+    iterations: int,
+    samples: int,
+    min_us: int,
+    median_us: int,
+    max_us: int,
+    p95_us: int,
+    total_ms: int,
+    checksum: u64
+}
+pub vector BenchStats(BenchStat);
+// Ascending copy of `values` (insertion sort; sample counts are small).
+@effect(no_io, bounded)
+pub fn sorted_copy(values: &ints) -> ints {
+    let mut out = [];
+    for i in 0..len(values) {
+        push(out, at(values, i));
+        for k in 0..i {
+            let j = i - k;
+            let below = at(out, j - 1);
+            let here = at(out, j);
+            if below <= here {
+                break;
+            }
+            set(out, j - 1, here);
+            set(out, j, below);
+        }
+    }
+    return out;
+}
+// Nearest-rank percentile (`pct` in 1..=100) of an ascending list; 0 when empty.
+@effect(no_alloc, no_io, bounded)
+pub fn percentile_sorted(sorted: &ints, pct: int) -> int {
+    let n = len(sorted);
+    if n == 0 {
+        return 0;
+    }
+    let mut rank =(pct * n + 99) / 100;
+    if rank < 1 {
+        rank = 1;
+    }
+    if rank > n {
+        rank = n;
+    }
+    return at(sorted, rank - 1);
+}
+@effect(no_io, bounded)
+pub fn compute_stats(name: &str, iterations: int, sample_ms: &ints, checksum: u64) -> BenchStat {
+    let sorted = sorted_copy(&sample_ms);
+    let n = len(sorted);
+    let mut stat = BenchStat { name: to_text(name), iterations: iterations, samples: n, min_us: 0, median_us: 0, max_us: 0, p95_us: 0, total_ms: 0, checksum: checksum };
+    if n == 0 {
+        return stat;
+    }
+    let mut total_us = 0;
+    for i in 0..n {
+        total_us = total_us + at(sorted, i);
+    }
+    stat.min_us = at(sorted, 0);
+    stat.max_us = at(sorted, n - 1);
+    if n % 2 == 1 {
+        stat.median_us = at(sorted, n / 2);
+    } else {
+        stat.median_us =(at(sorted, n / 2 - 1) + at(sorted, n / 2)) / 2;
+    }
+    stat.p95_us = percentile_sorted(&sorted, 95);
+    stat.total_ms = total_us / 1000;
+    return stat;
+}
+// "0x" plus 16 lowercase hex digits.
+@effect(no_io, bounded)
+pub fn checksum_hex(v: u64) -> text {
+    let digits = "0123456789abcdef";
+    let mut parts = texts();
+    push(parts, "0x");
+    for i in 0..16 {
+        let nibble = int(bit_and(shr(v, 60 - i * 4), u64(15)));
+        push(parts, slice(digits, nibble, nibble + 1));
+    }
+    return text_join(parts, "");
+}
+@effect(no_io, bounded)
+fn json_string(s: &text) -> text {
+    let digits = "0123456789abcdef";
+    let mut parts = texts();
+    push(parts, "\"");
+    let mut run_start = 0;
+    for i in 0..len(s) {
+        let c = byte_at(s, i);
+        if c == 34 || c == 92 || c < 32 {
+            push(parts, slice(s, run_start, i));
+            if c == 34 {
+                push(parts, "\\\"");
+            } else if c == 92 {
+                push(parts, "\\\\");
+            } else if c == 10 {
+                push(parts, "\\n");
+            } else if c == 9 {
+                push(parts, "\\t");
+            } else {
+                push(parts, concat("\\u00", concat(slice(digits, c / 16, c / 16 + 1), slice(digits, c % 16, c % 16 + 1))));
+            }
+            run_start = i + 1;
+        }
+    }
+    push(parts, slice(s, run_start, len(s)));
+    push(parts, "\"");
+    return text_join(parts, "");
+}
+@effect(no_io, bounded)
+fn markdown_row(row: &BenchStat) -> text {
+    let mut cells = texts();
+    push(cells, text_replace(row.name, "|", "\\|"));
+    push(cells, int_text(row.iterations));
+    push(cells, int_text(row.samples));
+    push(cells, int_text(row.min_us));
+    push(cells, int_text(row.median_us));
+    push(cells, int_text(row.p95_us));
+    push(cells, int_text(row.max_us));
+    push(cells, concat(concat("`", checksum_hex(row.checksum)), "`"));
+    return concat(concat("| ", text_join(cells, " | ")), " |");
+}
+@effect(no_io, bounded)
+pub fn render_bench_markdown(suite_name: &str, rows: &BenchStats) -> text {
+    let mut lines = texts();
+    push(lines, concat("## ", suite_name));
+    push(lines, "");
+    push(lines, "| Workload | Iterations | Samples | Min (us) | Median (us) | P95 (us) | Max (us) | Checksum |");
+    push(lines, "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | :--- |");
+    let mut total_ms = 0;
+    for row in &rows {
+        push(lines, markdown_row(&row));
+        total_ms = total_ms + row.total_ms;
+    }
+    push(lines, "");
+    let mut count = concat(int_text(len(rows)), " workloads");
+    if len(rows) == 1 {
+        count = "1 workload";
+    }
+    push(lines, concat(concat(concat(concat("Measured ", int_text(total_ms)), " ms across "), count), ". Each sample times one batch of `Iterations` runs."));
+    push(lines, "");
+    return text_join(lines, "\n");
+}
+// One line, fixed key order, checksums as hex strings (u64 does not fit a JSON-safe integer).
+@effect(no_io, bounded)
+pub fn render_bench_json(suite_name: &str, rows: &BenchStats) -> text {
+    let suite = to_text(suite_name);
+    let mut parts = texts();
+    push(parts, concat(concat("{\"schema\":\"anode.bench.v1\",\"suite\":", json_string(&suite)), ",\"workloads\":["));
+    let mut total_ms = 0;
+    let mut first = true;
+    for row in &rows {
+        if !first {
+            push(parts, ",");
+        }
+        first = false;
+        let mut fields = texts();
+        push(fields, concat("\"name\":", json_string(&row.name)));
+        push(fields, concat("\"iterations\":", int_text(row.iterations)));
+        push(fields, concat("\"samples\":", int_text(row.samples)));
+        push(fields, concat("\"min_us\":", int_text(row.min_us)));
+        push(fields, concat("\"median_us\":", int_text(row.median_us)));
+        push(fields, concat("\"p95_us\":", int_text(row.p95_us)));
+        push(fields, concat("\"max_us\":", int_text(row.max_us)));
+        push(fields, concat("\"total_ms\":", int_text(row.total_ms)));
+        push(fields, concat(concat("\"checksum\":\"", checksum_hex(row.checksum)), "\""));
+        push(parts, concat(concat("{", text_join(fields, ",")), "}"));
+        total_ms = total_ms + row.total_ms;
+    }
+    push(parts, concat(concat("],\"total_ms\":", int_text(total_ms)), "}"));
+    return text_join(parts, "");
+}
+// Library packages carry an empty entry point so `anode check <package>` accepts them.
+fn main() {}
+// ---------------------------------------------------------------- tests
+fn stats(name: &text, iterations: int, samples: &ints, checksum: u64) -> BenchStat {
+    let mut stat = BenchStat { name: "", iterations: 0, samples: 0, min_us: 0, median_us: 0, max_us: 0, p95_us: 0, total_ms: 0, checksum: u64(0) };
+    borrow n = region(name, 0, len(name)) {
+        stat = compute_stats(&n, iterations, &samples, checksum);
+    }
+    return stat;
+}
+test odd_unsorted_samples() {
+    let name = "crc32";
+    let samples = [50, 10, 40, 20, 30];
+    let s = stats(&name, 100, &samples, u64(7));
+    assert s.samples == 5 && s.iterations == 100;
+    assert s.min_us == 10 && s.median_us == 30 && s.max_us == 50;
+    assert s.p95_us == 50;
+    assert s.total_ms == 0;
+    assert s.checksum == u64(7);
+    let untouched = at(samples, 0);
+    assert untouched == 50;
+}
+test even_and_twenty_sample_percentiles() {
+    let name = "even";
+    let even = [4000, 1000, 3000, 2000];
+    let e = stats(&name, 1, &even, u64(0));
+    assert e.min_us == 1000 && e.median_us == 2500 && e.max_us == 4000 && e.p95_us == 4000;
+    assert e.total_ms == 10;
+    let twenty = [13, 2, 19, 7, 20, 1, 16, 4, 11, 9, 18, 3, 14, 6, 17, 5, 12, 8, 15, 10];
+    let t = stats(&name, 1, &twenty, u64(0));
+    assert t.min_us == 1 && t.max_us == 20;
+    assert t.median_us == 10;
+    assert t.p95_us == 19;
+    let sorted = sorted_copy(&twenty);
+    let mut ascending = true;
+    for i in 1..len(sorted) {
+        if at(sorted, i - 1) > at(sorted, i) {
+            ascending = false;
+        }
+    }
+    assert ascending;
+    let p50 = percentile_sorted(&sorted, 50);
+    assert p50 == 10;
+    let none = [];
+    let z = stats(&name, 10, &none, u64(0));
+    assert z.samples == 0 && z.min_us == 0 && z.p95_us == 0;
+}
+test markdown_and_json_reports() {
+    let mut rows = BenchStats();
+    let a = "crc|32";
+    let a_samples = [1200, 1000, 1100];
+    push(rows, stats(&a, 64, &a_samples, u64(3735928559)));
+    let b = "glob \"star\"";
+    let b_samples = [500];
+    push(rows, stats(&b, 1000, &b_samples, u64(1)));
+    let suite = "unit suite";
+    let mut md = "";
+    let mut js = "";
+    borrow sv = region(suite, 0, len(suite)) {
+        md = render_bench_markdown(&sv, &rows);
+        js = render_bench_json(&sv, &rows);
+    }
+    let md_ok = text_eq(md, "## unit suite\n\n| Workload | Iterations | Samples | Min (us) | Median (us) | P95 (us) | Max (us) | Checksum |\n| :--- | ---: | ---: | ---: | ---: | ---: | ---: | :--- |\n| crc\\|32 | 64 | 3 | 1000 | 1100 | 1200 | 1200 | `0x00000000deadbeef` |\n| glob \"star\" | 1000 | 1 | 500 | 500 | 500 | 500 | `0x0000000000000001` |\n\nMeasured 3 ms across 2 workloads. Each sample times one batch of `Iterations` runs.\n");
+    if !md_ok {
+        print md;
+    }
+    assert md_ok;
+    let js_ok = text_eq(js, "{\"schema\":\"anode.bench.v1\",\"suite\":\"unit suite\",\"workloads\":[{\"name\":\"crc|32\",\"iterations\":64,\"samples\":3,\"min_us\":1000,\"median_us\":1100,\"p95_us\":1200,\"max_us\":1200,\"total_ms\":3,\"checksum\":\"0x00000000deadbeef\"},{\"name\":\"glob \\\"star\\\"\",\"iterations\":1000,\"samples\":1,\"min_us\":500,\"median_us\":500,\"p95_us\":500,\"max_us\":500,\"total_ms\":0,\"checksum\":\"0x0000000000000001\"}],\"total_ms\":3}");
+    if !js_ok {
+        print js;
+    }
+    assert js_ok;
+    let empty = BenchStats();
+    let mut empty_js = "";
+    borrow sv2 = region(suite, 0, len(suite)) {
+        empty_js = render_bench_json(&sv2, &empty);
+    }
+    let empty_ok = text_eq(empty_js, "{\"schema\":\"anode.bench.v1\",\"suite\":\"unit suite\",\"workloads\":[],\"total_ms\":0}");
+    assert empty_ok;
+}

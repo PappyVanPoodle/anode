@@ -1,0 +1,297 @@
+// glob_regex: allocation-free, bounded byte matchers.
+//
+// glob_match syntax (whole-target match):
+//   *       any sequence, including empty and '/'
+//   ?       any single byte
+//   [a-z]   byte class with ranges; [!..] or [^..] negates; a leading ']' and a
+//           leading/trailing '-' are literal; an unclosed '[' is literal
+//   \x      literal x
+//
+// find_subpattern syntax (first match offset, or -1):
+//   ^ at the start anchors to offset 0, $ at the end anchors to the target end,
+//   . matches any byte, \x is literal x, everything else is literal.
+// Index of the ']' closing the class opened at `p`, or -1.
+@effect(no_alloc, no_io, bounded)
+fn class_end(pat: &str, p: int) -> int {
+    let n = len(pat);
+    let mut i = p + 1;
+    if i < n &&(byte_at(pat, i) == 33 || byte_at(pat, i) == 94) {
+        i = i + 1;
+    }
+    if i < n && byte_at(pat, i) == 93 {
+        i = i + 1;
+    }
+    for j in i..n {
+        if byte_at(pat, j) == 93 {
+            return j;
+        }
+    }
+    return -1;
+}
+@effect(no_alloc, no_io, bounded)
+fn class_matches(pat: &str, p: int, close: int, c: int) -> bool {
+    let mut i = p + 1;
+    let mut negate = false;
+    if byte_at(pat, i) == 33 || byte_at(pat, i) == 94 {
+        negate = true;
+        i = i + 1;
+    }
+    let mut matched = false;
+    let mut skip_to = i;
+    for j in i..close {
+        if j >= skip_to {
+            let lo = byte_at(pat, j);
+            if j + 2 < close && byte_at(pat, j + 1) == 45 {
+                if c >= lo && c <= byte_at(pat, j + 2) {
+                    matched = true;
+                }
+                skip_to = j + 3;
+            } else if c == lo {
+                matched = true;
+            }
+        }
+    }
+    return matched != negate;
+}
+// Pattern bytes consumed by the single-byte token at `p` (never '*').
+@effect(no_alloc, no_io, bounded)
+fn token_len(pat: &str, p: int) -> int {
+    let c = byte_at(pat, p);
+    if c == 91 {
+        let close = class_end(&pat, p);
+        if close > 0 {
+            return close - p + 1;
+        }
+    }
+    if c == 92 && p + 1 < len(pat) {
+        return 2;
+    }
+    return 1;
+}
+@effect(no_alloc, no_io, bounded)
+fn token_matches(pat: &str, p: int, c: int) -> bool {
+    let first = byte_at(pat, p);
+    if first == 63 {
+        return true;
+    }
+    if first == 91 {
+        let close = class_end(&pat, p);
+        if close > 0 {
+            return class_matches(&pat, p, close, c);
+        }
+    }
+    if first == 92 && p + 1 < len(pat) {
+        return byte_at(pat, p + 1) == c;
+    }
+    return first == c;
+}
+@effect(no_alloc, no_io, bounded)
+pub fn glob_match(pattern: &str, target: &str) -> bool {
+    let pn = len(pattern);
+    let tn = len(target);
+    let mut p = 0;
+    let mut t = 0;
+    // Most recent '*' and the target offset it currently absorbs up to.
+    let mut star_p = -1;
+    let mut star_t = 0;
+    // Each step advances t, passes a '*', or retries a star one byte later,
+    // so (pn + 2) * (tn + 2) steps always reach a verdict.
+    for step in 0..(pn + 2) *(tn + 2) {
+        if t < tn {
+            if p < pn && byte_at(pattern, p) == 42 {
+                star_p = p;
+                star_t = t;
+                p = p + 1;
+            } else if p < pn && token_matches(&pattern, p, byte_at(target, t)) {
+                p = p + token_len(&pattern, p);
+                t = t + 1;
+            } else if star_p >= 0 {
+                star_t = star_t + 1;
+                t = star_t;
+                p = star_p + 1;
+            } else {
+                return false;
+            }
+        } else {
+            for rest in p..pn {
+                if byte_at(pattern, rest) != 42 {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    return false;
+}
+// Number of pattern tokens in pat[bs..be] (an escape pair is one token).
+@effect(no_alloc, no_io, bounded)
+fn literal_token_count(pat: &str, bs: int, be: int) -> int {
+    let mut count = 0;
+    let mut skip = false;
+    for i in bs..be {
+        if skip {
+            skip = false;
+        } else {
+            if byte_at(pat, i) == 92 && i + 1 < be {
+                skip = true;
+            }
+            count = count + 1;
+        }
+    }
+    return count;
+}
+// Whether pat[bs..be] matches target starting at offset s.
+@effect(no_alloc, no_io, bounded)
+fn body_matches_at(pat: &str, bs: int, be: int, target: &str, s: int) -> bool {
+    let tn = len(target);
+    let mut t = s;
+    let mut skip = false;
+    for i in bs..be {
+        if skip {
+            skip = false;
+        } else {
+            if t >= tn {
+                return false;
+            }
+            let c = byte_at(pat, i);
+            let b = byte_at(target, t);
+            if c == 92 && i + 1 < be {
+                if byte_at(pat, i + 1) != b {
+                    return false;
+                }
+                skip = true;
+            } else if c != 46 && c != b {
+                return false;
+            }
+            t = t + 1;
+        }
+    }
+    return true;
+}
+// A trailing '$' anchors unless an odd run of backslashes escapes it.
+@effect(no_alloc, no_io, bounded)
+fn has_end_anchor(pat: &str, bs: int) -> bool {
+    let n = len(pat);
+    if n <= bs || byte_at(pat, n - 1) != 36 {
+        return false;
+    }
+    let mut slashes = 0;
+    for k in 0..n - 1 - bs {
+        if byte_at(pat, n - 2 - k) != 92 {
+            break;
+        }
+        slashes = slashes + 1;
+    }
+    return slashes % 2 == 0;
+}
+@effect(no_alloc, no_io, bounded)
+pub fn find_subpattern(pattern: &str, target: &str) -> int {
+    let pn = len(pattern);
+    let tn = len(target);
+    let mut bs = 0;
+    let anchored_start = pn > 0 && byte_at(pattern, 0) == 94;
+    if anchored_start {
+        bs = 1;
+    }
+    let anchored_end = has_end_anchor(&pattern, bs);
+    let mut be = pn;
+    if anchored_end {
+        be = pn - 1;
+    }
+    let m = literal_token_count(&pattern, bs, be);
+    if m > tn {
+        return -1;
+    }
+    let mut last = tn - m;
+    if anchored_start {
+        last = 0;
+    }
+    for s in 0..last + 1 {
+        if (!anchored_end || s + m == tn) && body_matches_at(&pattern, bs, be, &target, s) {
+            return s;
+        }
+    }
+    return -1;
+}
+@effect(no_alloc, no_io, bounded)
+pub fn contains_subpattern(pattern: &str, target: &str) -> bool {
+    return find_subpattern(&pattern, &target) >= 0;
+}
+// Library packages carry an empty entry point so `anode check <package>` accepts them.
+fn main() {}
+// ---------------------------------------------------------------- tests
+fn glob(pattern: &text, target: &text) -> bool {
+    let mut r = false;
+    borrow p = region(pattern, 0, len(pattern)) {
+        borrow t = region(target, 0, len(target)) {
+            r = glob_match(&p, &t);
+        }
+    }
+    return r;
+}
+fn find(pattern: &text, target: &text) -> int {
+    let mut r = -2;
+    borrow p = region(pattern, 0, len(pattern)) {
+        borrow t = region(target, 0, len(target)) {
+            r = find_subpattern(&p, &t);
+        }
+    }
+    return r;
+}
+// Checks glob(patterns[i], targets[i]) == (expect[i] == 1) for every row.
+fn glob_table(patterns: &texts, targets: &texts, expect: &ints) -> int {
+    let mut failures = 0;
+    for i in 0..len(patterns) {
+        let p = text_at(patterns, i);
+        let t = text_at(targets, i);
+        let got = glob(&p, &t);
+        if got !=(at(expect, i) == 1) {
+            print concat(concat(concat("glob mismatch: ", p), " vs "), t);
+            failures = failures + 1;
+        }
+    }
+    return failures;
+}
+fn find_table(patterns: &texts, targets: &texts, expect: &ints) -> int {
+    let mut failures = 0;
+    for i in 0..len(patterns) {
+        let p = text_at(patterns, i);
+        let t = text_at(targets, i);
+        let got = find(&p, &t);
+        if got != at(expect, i) {
+            print concat(concat(concat("find mismatch: ", p), " in "), t);
+            failures = failures + 1;
+        }
+    }
+    return failures;
+}
+test glob_wildcards() {
+    let patterns = ["*.an", "*.an", "*.an", "src/*/lib.an", "file?.txt", "file?.txt", "file?.txt", "a*b*c", "a*b*c", "a*b*c", "*", "**", "", "", "a*a*a*a*b"];
+    let targets = ["main.an", "main.rs", ".an", "src/json/lib.an", "file1.txt", "file10.txt", "file.txt", "abc", "aXXbYYc", "acb", "", "any/thing", "", "x", "aaaaaaaaaaaaaaaaaaaaaaaa"];
+    let expect = [1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0];
+    let failures = glob_table(&patterns, &targets, &expect);
+    assert failures == 0;
+}
+test glob_character_classes_and_escapes() {
+    let patterns = ["[a-c]at", "[a-c]at", "[!a-c]at", "[!a-c]at", "[^x]y", "[]]", "[a-]", "[a-]", "[abc", "\\*", "\\*", "img[0-9][0-9].png", "img[0-9][0-9].png", "[A-Za-z_]*"];
+    let targets = ["bat", "dat", "dat", "cat", "zy", "]", "-", "b", "[abc", "*", "a", "img42.png", "img4x.png", "_private"];
+    let expect = [1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1, 0, 1];
+    let failures = glob_table(&patterns, &targets, &expect);
+    assert failures == 0;
+}
+test subpattern_literals_wildcards_and_anchors() {
+    let patterns = ["world", "^hello", "^world", "d$", "o$", "w.r", "^h.llo w.rld$", "\\.", "\\.", "", "$", "^$", "^$", "longer than target", "l+", "a\\$", "a$"];
+    let targets = ["hello world", "hello world", "hello world", "hello world", "hello world", "hello world", "hello world", "a.b", "ab", "abc", "abc", "", "x", "short", "all+", "a$b", "aa"];
+    let expect = [6, 0, -1, 10, -1, 6, 0, 1, -1, 0, 3, 0, -1, -1, 2, 0, 1];
+    let failures = find_table(&patterns, &targets, &expect);
+    assert failures == 0;
+    let p = "o w";
+    let t = "hello world";
+    let mut hit = false;
+    borrow pv = region(p, 0, len(p)) {
+        borrow tv = region(t, 0, len(t)) {
+            hit = contains_subpattern(&pv, &tv);
+        }
+    }
+    assert hit;
+}

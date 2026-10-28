@@ -1,0 +1,782 @@
+// json: strict JSON parser into a generational arena tree, queries and a
+// compact deterministic writer.
+//
+// Supported values: null, true/false, 64-bit integers, strings with every
+// RFC 8259 escape (\u0000 is rejected because text cannot hold NUL), arrays
+// and objects. Fractions and exponents are rejected. Nesting depth <= 128.
+//
+// Nodes are numbered in parse (pre-order) order, root = 0. Children form a
+// linked list through `first_child` / `next_sibling` (-1 = none); object
+// members carry their `key`. Arena handles have no integer form, so
+// `JsonDoc.ids[i]` holds the handle of node i.
+pub struct JsonNode {
+    kind: int,
+    text_val: text,
+    int_val: int,
+    bool_val: bool,
+    first_child: int,
+    next_sibling: int,
+    key: text
+}
+pub arena JsonArena(JsonNode);
+pub vector JsonIds(id(JsonArena));
+pub struct JsonDoc {
+    nodes: JsonArena,
+    ids: JsonIds,
+    root: int
+}
+pub enum JsonParse {
+    Ok(JsonDoc),
+    Err(text)
+}
+struct Parser {
+    pos: int,
+    nodes: JsonArena,
+    ids: JsonIds,
+    err: text
+}
+// ---------------------------------------------------------------- parser
+// Records the first error only, with its byte offset, and returns -1.
+fn fail(p: &mut Parser, message: text) -> int {
+    if len(p.err) == 0 {
+        p.err = concat(concat(message, " at byte "), int_text(p.pos));
+    }
+    return -1;
+}
+@effect(no_alloc, no_io, bounded)
+fn skip_ws(src: &str, p: &mut Parser) {
+    for i in p.pos..len(src) {
+        let c = byte_at(src, i);
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            p.pos = i;
+            return;
+        }
+    }
+    p.pos = len(src);
+}
+fn new_node(p: &mut Parser, kind: int, key: text) -> int {
+    let h = alloc(p.nodes, JsonNode { kind: kind, text_val: "", int_val: 0, bool_val: false, first_child: -1, next_sibling: -1, key: key });
+    push(p.ids, h);
+    return len(p.ids) - 1;
+}
+fn link_child(p: &mut Parser, parent: int, prev: int, child: int) {
+    if prev < 0 {
+        let h = at(p.ids, parent);
+        borrow mut n = get(p.nodes, h) {
+            n.first_child = child;
+        }
+    } else {
+        let h = at(p.ids, prev);
+        borrow mut n = get(p.nodes, h) {
+            n.next_sibling = child;
+        }
+    }
+}
+@effect(no_alloc, no_io, bounded)
+fn expect_word(src: &str, p: &mut Parser, word: &text) -> bool {
+    if p.pos + len(word) > len(src) {
+        return false;
+    }
+    for k in 0..len(word) {
+        if byte_at(src, p.pos + k) != byte_at(word, k) {
+            return false;
+        }
+    }
+    p.pos = p.pos + len(word);
+    return true;
+}
+@effect(no_alloc, no_io, bounded)
+fn hex4(src: &str, at: int) -> int {
+    if at + 4 > len(src) {
+        return -1;
+    }
+    let mut v = 0;
+    for k in at..at + 4 {
+        let c = byte_at(src, k);
+        let mut d = -1;
+        if c >= 48 && c <= 57 {
+            d = c - 48;
+        } else if c >= 97 && c <= 102 {
+            d = c - 87;
+        } else if c >= 65 && c <= 70 {
+            d = c - 55;
+        }
+        if d < 0 {
+            return -1;
+        }
+        v = v * 16 + d;
+    }
+    return v;
+}
+// Parses the string whose opening quote is at p.pos; leaves p.pos after the
+// closing quote. On error sets p.err and returns "".
+fn parse_string(src: &str, p: &mut Parser) -> text {
+    let n = len(src);
+    let mut parts = texts();
+    let mut run_start = p.pos + 1;
+    let mut skip_to = p.pos + 1;
+    for j in p.pos + 1..n {
+        if j >= skip_to {
+            let c = byte_at(src, j);
+            if c == 34 {
+                push(parts, slice(src, run_start, j));
+                p.pos = j + 1;
+                return text_join(parts, "");
+            }
+            if c < 32 {
+                p.pos = j;
+                fail(&mut p, "control character in string");
+                return "";
+            }
+            if c == 92 {
+                push(parts, slice(src, run_start, j));
+                if j + 1 >= n {
+                    break;
+                }
+                let e = byte_at(src, j + 1);
+                skip_to = j + 2;
+                if e == 34 || e == 92 || e == 47 {
+                    push(parts, slice(src, j + 1, j + 2));
+                } else if e == 110 {
+                    push(parts, "\n");
+                } else if e == 116 {
+                    push(parts, "\t");
+                } else if e == 114 {
+                    push(parts, "\r");
+                } else if e == 98 {
+                    push(parts, codepoint_text(8));
+                } else if e == 102 {
+                    push(parts, codepoint_text(12));
+                } else if e == 117 {
+                    let mut cp = hex4(&src, j + 2);
+                    skip_to = j + 6;
+                    if cp >= 55296 && cp <= 56319 {
+                        let mut lo = -1;
+                        if j + 12 <= n && byte_at(src, j + 6) == 92 && byte_at(src, j + 7) == 117 {
+                            lo = hex4(&src, j + 8);
+                        }
+                        if lo < 56320 || lo > 57343 {
+                            p.pos = j;
+                            fail(&mut p, "unpaired surrogate escape");
+                            return "";
+                        }
+                        cp = 65536 +(cp - 55296) * 1024 +(lo - 56320);
+                        skip_to = j + 12;
+                    }
+                    if cp < 0 {
+                        p.pos = j;
+                        fail(&mut p, "invalid \\u escape");
+                        return "";
+                    }
+                    if cp == 0 {
+                        p.pos = j;
+                        fail(&mut p, "\\u0000 cannot be represented in text");
+                        return "";
+                    }
+                    if cp >= 56320 && cp <= 57343 {
+                        p.pos = j;
+                        fail(&mut p, "unpaired surrogate escape");
+                        return "";
+                    }
+                    push(parts, codepoint_text(cp));
+                } else {
+                    p.pos = j;
+                    fail(&mut p, "invalid escape");
+                    return "";
+                }
+                run_start = skip_to;
+            }
+        }
+    }
+    p.pos = n;
+    fail(&mut p, "unterminated string");
+    return "";
+}
+fn parse_int_value(src: &str, p: &mut Parser, key: text) -> int {
+    let n = len(src);
+    let start = p.pos;
+    let mut digits_start = start;
+    if byte_at(src, start) == 45 {
+        digits_start = start + 1;
+    }
+    let mut end = digits_start;
+    for j in digits_start..n {
+        let c = byte_at(src, j);
+        if c < 48 || c > 57 {
+            break;
+        }
+        end = j + 1;
+    }
+    if end == digits_start {
+        return fail(&mut p, "expected digits");
+    }
+    if byte_at(src, digits_start) == 48 && end > digits_start + 1 {
+        return fail(&mut p, "leading zeros are not allowed");
+    }
+    if end < n {
+        let c = byte_at(src, end);
+        if c == 46 || c == 101 || c == 69 {
+            p.pos = end;
+            return fail(&mut p, "only integer numbers are supported");
+        }
+    }
+    let digits = slice(src, start, end);
+    if !is_int(digits) {
+        return fail(&mut p, "integer out of 64-bit range");
+    }
+    let idx = new_node(&mut p, 2, key);
+    let h = at(p.ids, idx);
+    borrow mut node = get(p.nodes, h) {
+        node.int_val = parse_int(digits);
+    }
+    p.pos = end;
+    return idx;
+}
+fn parse_array(src: &str, p: &mut Parser, key: text, depth: int) -> int {
+    let idx = new_node(&mut p, 4, key);
+    p.pos = p.pos + 1;
+    skip_ws(&src, &mut p);
+    if p.pos < len(src) && byte_at(src, p.pos) == 93 {
+        p.pos = p.pos + 1;
+        return idx;
+    }
+    let mut prev = -1;
+    // Every element consumes at least one byte.
+    for step in 0..len(src) {
+        let child = parse_value(&src, &mut p, "", depth + 1);
+        if child < 0 {
+            return -1;
+        }
+        link_child(&mut p, idx, prev, child);
+        prev = child;
+        skip_ws(&src, &mut p);
+        if p.pos >= len(src) {
+            return fail(&mut p, "unterminated array");
+        }
+        let c = byte_at(src, p.pos);
+        p.pos = p.pos + 1;
+        if c == 93 {
+            return idx;
+        }
+        if c != 44 {
+            p.pos = p.pos - 1;
+            return fail(&mut p, "expected ',' or ']'");
+        }
+    }
+    return fail(&mut p, "unterminated array");
+}
+fn parse_object(src: &str, p: &mut Parser, key: text, depth: int) -> int {
+    let idx = new_node(&mut p, 5, key);
+    p.pos = p.pos + 1;
+    skip_ws(&src, &mut p);
+    if p.pos < len(src) && byte_at(src, p.pos) == 125 {
+        p.pos = p.pos + 1;
+        return idx;
+    }
+    let mut prev = -1;
+    for step in 0..len(src) {
+        skip_ws(&src, &mut p);
+        if p.pos >= len(src) || byte_at(src, p.pos) != 34 {
+            return fail(&mut p, "expected string key");
+        }
+        let member_key = parse_string(&src, &mut p);
+        if len(p.err) > 0 {
+            return -1;
+        }
+        skip_ws(&src, &mut p);
+        if p.pos >= len(src) || byte_at(src, p.pos) != 58 {
+            return fail(&mut p, "expected ':'");
+        }
+        p.pos = p.pos + 1;
+        let child = parse_value(&src, &mut p, member_key, depth + 1);
+        if child < 0 {
+            return -1;
+        }
+        link_child(&mut p, idx, prev, child);
+        prev = child;
+        skip_ws(&src, &mut p);
+        if p.pos >= len(src) {
+            return fail(&mut p, "unterminated object");
+        }
+        let c = byte_at(src, p.pos);
+        p.pos = p.pos + 1;
+        if c == 125 {
+            return idx;
+        }
+        if c != 44 {
+            p.pos = p.pos - 1;
+            return fail(&mut p, "expected ',' or '}'");
+        }
+    }
+    return fail(&mut p, "unterminated object");
+}
+fn parse_value(src: &str, p: &mut Parser, key: text, depth: int) -> int {
+    skip_ws(&src, &mut p);
+    if depth > 128 {
+        return fail(&mut p, "nesting deeper than 128");
+    }
+    if p.pos >= len(src) {
+        return fail(&mut p, "unexpected end of input");
+    }
+    let c = byte_at(src, p.pos);
+    if c == 123 {
+        return parse_object(&src, &mut p, key, depth);
+    }
+    if c == 91 {
+        return parse_array(&src, &mut p, key, depth);
+    }
+    if c == 34 {
+        let s = parse_string(&src, &mut p);
+        if len(p.err) > 0 {
+            return -1;
+        }
+        let idx = new_node(&mut p, 3, key);
+        let h = at(p.ids, idx);
+        borrow mut node = get(p.nodes, h) {
+            node.text_val = s;
+        }
+        return idx;
+    }
+    if c == 45 ||(c >= 48 && c <= 57) {
+        return parse_int_value(&src, &mut p, key);
+    }
+    let word_true = "true";
+    let word_false = "false";
+    let word_null = "null";
+    if expect_word(&src, &mut p, &word_true) {
+        let idx = new_node(&mut p, 1, key);
+        let h = at(p.ids, idx);
+        borrow mut node = get(p.nodes, h) {
+            node.bool_val = true;
+        }
+        return idx;
+    }
+    if expect_word(&src, &mut p, &word_false) {
+        return new_node(&mut p, 1, key);
+    }
+    if expect_word(&src, &mut p, &word_null) {
+        return new_node(&mut p, 0, key);
+    }
+    return fail(&mut p, "unexpected character");
+}
+@effect(no_io)
+pub fn parse_json(src: &str) -> JsonParse {
+    let mut p = Parser { pos: 0, nodes: JsonArena(), ids: JsonIds(), err: "" };
+    if len(src) > 16777216 {
+        return JsonParse::Err("JSON source exceeds 16 MiB");
+    }
+    let root = parse_value(&src, &mut p, "", 0);
+    if root < 0 {
+        return JsonParse::Err(p.err);
+    }
+    skip_ws(&src, &mut p);
+    if p.pos != len(src) {
+        fail(&mut p, "trailing characters");
+        return JsonParse::Err(p.err);
+    }
+    return JsonParse::Ok(JsonDoc { nodes: p.nodes, ids: p.ids, root: root });
+}
+// ---------------------------------------------------------------- queries
+@effect(no_alloc, no_io, bounded)
+pub fn node_count(doc: &JsonDoc) -> int {
+    return len(doc.ids);
+}
+// Node kind, or -1 for an index outside the document.
+@effect(no_alloc, no_io, bounded)
+pub fn node_kind(doc: &JsonDoc, idx: int) -> int {
+    if idx < 0 || idx >= len(doc.ids) {
+        return -1;
+    }
+    let h = at(doc.ids, idx);
+    borrow n = get(doc.nodes, h) {
+        return n.kind;
+    }
+}
+@effect(no_alloc, no_io, bounded)
+pub fn node_int(doc: &JsonDoc, idx: int) -> int {
+    if node_kind(&doc, idx) != 2 {
+        return 0;
+    }
+    let h = at(doc.ids, idx);
+    borrow n = get(doc.nodes, h) {
+        return n.int_val;
+    }
+}
+@effect(no_alloc, no_io, bounded)
+pub fn node_bool(doc: &JsonDoc, idx: int) -> bool {
+    if node_kind(&doc, idx) != 1 {
+        return false;
+    }
+    let h = at(doc.ids, idx);
+    borrow n = get(doc.nodes, h) {
+        return n.bool_val;
+    }
+}
+// String value of a string node, else "".
+@effect(no_io, bounded)
+pub fn node_text(doc: &JsonDoc, idx: int) -> text {
+    if node_kind(&doc, idx) != 3 {
+        return "";
+    }
+    let h = at(doc.ids, idx);
+    borrow n = get(doc.nodes, h) {
+        return clone(n.text_val);
+    }
+}
+@effect(no_alloc, no_io, bounded)
+fn first_child_of(doc: &JsonDoc, idx: int) -> int {
+    let h = at(doc.ids, idx);
+    borrow n = get(doc.nodes, h) {
+        return n.first_child;
+    }
+}
+@effect(no_alloc, no_io, bounded)
+fn next_sibling_of(doc: &JsonDoc, idx: int) -> int {
+    let h = at(doc.ids, idx);
+    borrow n = get(doc.nodes, h) {
+        return n.next_sibling;
+    }
+}
+// Member of object `obj_idx` named `key` (first occurrence), or -1.
+@effect(no_alloc, no_io, bounded)
+pub fn object_get(doc: &JsonDoc, obj_idx: int, key: &str) -> int {
+    if node_kind(&doc, obj_idx) != 5 {
+        return -1;
+    }
+    let mut c = first_child_of(&doc, obj_idx);
+    for step in 0..len(doc.ids) {
+        if c < 0 {
+            return -1;
+        }
+        let h = at(doc.ids, c);
+        borrow n = get(doc.nodes, h) {
+            if text_eq(n.key, key) {
+                return c;
+            }
+            c = n.next_sibling;
+        }
+    }
+    return -1;
+}
+// Element count of an array node, or -1 if `arr_idx` is not an array.
+@effect(no_alloc, no_io, bounded)
+pub fn array_len(doc: &JsonDoc, arr_idx: int) -> int {
+    if node_kind(&doc, arr_idx) != 4 {
+        return -1;
+    }
+    let mut count = 0;
+    let mut c = first_child_of(&doc, arr_idx);
+    for step in 0..len(doc.ids) {
+        if c < 0 {
+            return count;
+        }
+        count = count + 1;
+        c = next_sibling_of(&doc, c);
+    }
+    return count;
+}
+// Element `i` of an array node, or -1.
+@effect(no_alloc, no_io, bounded)
+pub fn array_get(doc: &JsonDoc, arr_idx: int, i: int) -> int {
+    if node_kind(&doc, arr_idx) != 4 || i < 0 {
+        return -1;
+    }
+    let mut c = first_child_of(&doc, arr_idx);
+    for step in 0..i {
+        if c < 0 {
+            return -1;
+        }
+        c = next_sibling_of(&doc, c);
+    }
+    return c;
+}
+// Dotted path from the root: "meta.tags.1". Numeric segments index arrays,
+// other segments select object members. "" is the root. Returns -1 if missing.
+@effect(no_alloc, no_io, bounded)
+pub fn query_path(doc: &JsonDoc, path: &str) -> int {
+    let mut cur = doc.root;
+    let mut seg_start = 0;
+    for i in 0..len(path) + 1 {
+        if i == len(path) || byte_at(path, i) == 46 {
+            if len(path) > 0 {
+                borrow seg = region(path, seg_start, i) {
+                    if node_kind(&doc, cur) == 4 && is_int(seg) {
+                        cur = array_get(&doc, cur, parse_int(seg));
+                    } else {
+                        cur = object_get(&doc, cur, &seg);
+                    }
+                }
+                if cur < 0 {
+                    return -1;
+                }
+            }
+            seg_start = i + 1;
+        }
+    }
+    return cur;
+}
+// ---------------------------------------------------------------- writer
+fn escape_into(s: &text, out: &mut texts) {
+    push(out, "\"");
+    let mut run_start = 0;
+    for i in 0..len(s) {
+        let c = byte_at(s, i);
+        if c == 34 || c == 92 || c < 32 {
+            push(out, slice(s, run_start, i));
+            if c == 34 {
+                push(out, "\\\"");
+            } else if c == 92 {
+                push(out, "\\\\");
+            } else if c == 10 {
+                push(out, "\\n");
+            } else if c == 13 {
+                push(out, "\\r");
+            } else if c == 9 {
+                push(out, "\\t");
+            } else if c == 8 {
+                push(out, "\\b");
+            } else if c == 12 {
+                push(out, "\\f");
+            } else {
+                let digits = "0123456789abcdef";
+                push(out, concat("\\u00", concat(slice(digits, c / 16, c / 16 + 1), slice(digits, c % 16, c % 16 + 1))));
+            }
+            run_start = i + 1;
+        }
+    }
+    push(out, slice(s, run_start, len(s)));
+    push(out, "\"");
+}
+fn render_into(doc: &JsonDoc, idx: int, out: &mut texts) {
+    let kind = node_kind(&doc, idx);
+    if kind == 0 {
+        push(out, "null");
+    } else if kind == 1 {
+        if node_bool(&doc, idx) {
+            push(out, "true");
+        } else {
+            push(out, "false");
+        }
+    } else if kind == 2 {
+        push(out, int_text(node_int(&doc, idx)));
+    } else if kind == 3 {
+        let s = node_text(&doc, idx);
+        escape_into(&s, &mut out);
+    } else if kind == 4 || kind == 5 {
+        if kind == 4 {
+            push(out, "[");
+        } else {
+            push(out, "{");
+        }
+        let mut c = first_child_of(&doc, idx);
+        let mut first = true;
+        for step in 0..len(doc.ids) {
+            if c < 0 {
+                break;
+            }
+            if !first {
+                push(out, ",");
+            }
+            first = false;
+            if kind == 5 {
+                let mut key = "";
+                let h = at(doc.ids, c);
+                borrow n = get(doc.nodes, h) {
+                    key = clone(n.key);
+                }
+                escape_into(&key, &mut out);
+                push(out, ":");
+            }
+            render_into(&doc, c, &mut out);
+            c = next_sibling_of(&doc, c);
+        }
+        if kind == 4 {
+            push(out, "]");
+        } else {
+            push(out, "}");
+        }
+    }
+}
+// Compact JSON for the subtree at `idx` ("" for an invalid index).
+@effect(no_io)
+pub fn render_node(doc: &JsonDoc, idx: int) -> text {
+    let mut out = texts();
+    render_into(&doc, idx, &mut out);
+    return text_join(out, "");
+}
+// Compact JSON: no insignificant whitespace, members in source order.
+@effect(no_io)
+pub fn render_json(doc: &JsonDoc) -> text {
+    return render_node(&doc, doc.root);
+}
+// Library packages carry an empty entry point so `anode check <package>` accepts them.
+fn main() {}
+// ---------------------------------------------------------------- tests
+fn parse_text(src: &text) -> JsonParse {
+    let mut parsed = JsonParse::Err("unparsed");
+    borrow v = region(src, 0, len(src)) {
+        parsed = parse_json(&v);
+    }
+    return parsed;
+}
+fn member(doc: &JsonDoc, obj: int, key: &text) -> int {
+    let mut r = -1;
+    borrow k = region(key, 0, len(key)) {
+        r = object_get(&doc, obj, &k);
+    }
+    return r;
+}
+fn path(doc: &JsonDoc, p: &text) -> int {
+    let mut r = -1;
+    borrow v = region(p, 0, len(p)) {
+        r = query_path(&doc, &v);
+    }
+    return r;
+}
+// "" when `src` parses and renders to `want`, else a description.
+fn roundtrip_problem(src: &text, want: &text) -> text {
+    match parse_text(&src) {
+        JsonParse::Ok(doc) => {
+            let out = render_json(&doc);
+            if text_eq(out, want) {
+                return "";
+            }
+            return concat("rendered ", out);
+        }
+        JsonParse::Err(message) => {
+            return concat("parse error: ", message);
+        }
+    }
+}
+test parse_nested_objects_and_query_fields() {
+    let src = "{\"name\":\"anode\",\"version\":13,\"tags\":[\"fast\",\"safe\"],\"meta\":{\"stable\":true,\"parent\":null,\"neg\":-7}}";
+    match parse_text(&src) {
+        JsonParse::Ok(doc) => {
+            assert doc.root == 0;
+            let root_kind = node_kind(&doc, doc.root);
+            assert root_kind == 5;
+            let name_key = "name";
+            let name = member(&doc, doc.root, &name_key);
+            let name_text = node_text(&doc, name);
+            let name_ok = text_eq(name_text, "anode");
+            assert name_ok;
+            let version_key = "version";
+            let version = member(&doc, doc.root, &version_key);
+            let v = node_int(&doc, version);
+            assert v == 13;
+            let tags_key = "tags";
+            let tags = member(&doc, doc.root, &tags_key);
+            let tag_count = array_len(&doc, tags);
+            assert tag_count == 2;
+            let second = array_get(&doc, tags, 1);
+            let second_text = node_text(&doc, second);
+            let second_ok = text_eq(second_text, "safe");
+            assert second_ok;
+            let out_of_range = array_get(&doc, tags, 2);
+            assert out_of_range == -1;
+            let meta_key = "meta";
+            let meta = member(&doc, doc.root, &meta_key);
+            let stable_key = "stable";
+            let stable = member(&doc, meta, &stable_key);
+            let stable_val = node_bool(&doc, stable);
+            assert stable_val;
+            let parent_path = "meta.parent";
+            let parent = path(&doc, &parent_path);
+            let parent_kind = node_kind(&doc, parent);
+            assert parent_kind == 0;
+            let neg_path = "meta.neg";
+            let neg = path(&doc, &neg_path);
+            let neg_val = node_int(&doc, neg);
+            assert neg_val == -7;
+            let tag_path = "tags.0";
+            let tag0 = path(&doc, &tag_path);
+            let tag0_text = node_text(&doc, tag0);
+            let tag0_ok = text_eq(tag0_text, "fast");
+            assert tag0_ok;
+            let missing_key = "missing";
+            let missing = member(&doc, doc.root, &missing_key);
+            assert missing == -1;
+            let bad_path = "meta.neg.deeper";
+            let bad = path(&doc, &bad_path);
+            assert bad == -1;
+            let not_array = array_len(&doc, meta);
+            assert not_array == -1;
+            let count = node_count(&doc);
+            assert count == 10;
+        }
+        JsonParse::Err(message) => {
+            print message;
+            assert false;
+        }
+    }
+}
+test render_round_trips_compact_and_spaced_input() {
+    let compact = "{\"a\":[1,2,{\"b\":null}],\"c\":\"x\\\"y\",\"d\":true,\"e\":false,\"f\":[],\"g\":{}}";
+    let p1 = roundtrip_problem(&compact, &compact);
+    assert len(p1) == 0;
+    let spaced = " {\n  \"a\" : [ 1 , 2 , { \"b\" : null } ],\r\n  \"c\":\"x\\\"y\", \"d\" :true,\"e\":false , \"f\":[ ], \"g\":{ }\n} ";
+    let p2 = roundtrip_problem(&spaced, &compact);
+    if len(p2) > 0 {
+        print p2;
+    }
+    assert len(p2) == 0;
+    let scalars = ["0", "-0", "-9223372036854775807", "\"\"", "null", "[[],{}]"];
+    let rendered = ["0", "0", "-9223372036854775807", "\"\"", "null", "[[],{}]"];
+    for i in 0..len(scalars) {
+        let s = text_at(scalars, i);
+        let want = text_at(rendered, i);
+        let problem = roundtrip_problem(&s, &want);
+        assert len(problem) == 0;
+    }
+}
+test string_escapes_decode_and_re_escape() {
+    let src = "[\"a\\\"b\\\\c\\nd\\u00e9\\ud83e\\udd9c\\t\\/\\b\\u001f\"]";
+    match parse_text(&src) {
+        JsonParse::Ok(doc) => {
+            let first = array_get(&doc, doc.root, 0);
+            let s = node_text(&doc, first);
+            assert len(s) == 17;
+            let out = render_json(&doc);
+            let want = "[\"a\\\"b\\\\c\\ndé🦜\\t/\\b\\u001f\"]";
+            let same = text_eq(out, want);
+            if !same {
+                print out;
+            }
+            assert same;
+            let again = roundtrip_problem(&out, &out);
+            assert len(again) == 0;
+        }
+        JsonParse::Err(message) => {
+            print message;
+            assert false;
+        }
+    }
+}
+test invalid_documents_report_errors() {
+    let bad = ["", "   ", "{", "[1,]", "{\"a\":}", "{\"a\" 1}", "{\"a\":1,}", "01", "1.5", "2e3", "-", "tru", "nul", "\"unterminated", "\"bad\\x\"", "[1] x", "\"\\u0000\"", "\"\\ud800\"", "\"\\udc00\"", "\"\\u12g4\"", "99999999999999999999", "{1:2}", "[\"tab\tinside\"]"];
+    for i in 0..len(bad) {
+        let src = text_at(bad, i);
+        match parse_text(&src) {
+            JsonParse::Ok(doc) => {
+                print concat("unexpectedly parsed: ", src);
+                assert false;
+            }
+            JsonParse::Err(message) => {
+                assert len(message) > 0;
+            }
+        }
+    }
+    let mut deep = "";
+    for i in 0..200 {
+        deep = concat(deep, "[");
+    }
+    match parse_text(&deep) {
+        JsonParse::Ok(doc) => {
+            assert false;
+        }
+        JsonParse::Err(message) => {
+            let says_depth = contains(message, "nesting");
+            assert says_depth;
+        }
+    }
+}

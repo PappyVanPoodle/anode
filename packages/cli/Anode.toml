@@ -1,0 +1,15 @@
+[package]
+name = "cli"
+version = "0.1.0"
+
+[build]
+entry = "src/lib.an"
+
+[capabilities]
+file_read = false
+file_write = false
+process_args = false
+process = false
+threads = false
+ffi = false
+net = false

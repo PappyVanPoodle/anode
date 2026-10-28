@@ -1,0 +1,313 @@
+// cli: argv parsing into a subcommand, flags and positionals, plus help text.
+//
+// Grammar, left to right:
+//   --            every later token is a positional
+//   --key=value   flag with a value
+//   --key         flag without a value
+//   -abc          short flags a, b and c; `-o=value` gives the last one a value
+//   -, -5         a lone dash or a negative integer is a bare token
+//   other         the first bare token is the subcommand, later ones positionals
+pub struct Flag {
+    key: text,
+    value: text,
+    has_value: bool
+}
+pub vector Flags(Flag);
+pub struct CliArgs {
+    subcommand: text,
+    flags: Flags,
+    positionals: texts
+}
+// Help metadata: `short` may be empty; `value_name` is empty for switches.
+pub struct FlagSpec {
+    key: text,
+    short: text,
+    value_name: text,
+    help: text
+}
+pub vector FlagSpecs(FlagSpec);
+@effect(no_alloc, no_io, bounded)
+fn is_long_flag(tok: &text) -> bool {
+    return len(tok) > 2 && byte_at(tok, 0) == 45 && byte_at(tok, 1) == 45;
+}
+@effect(no_alloc, no_io, bounded)
+fn is_short_flag(tok: &text) -> bool {
+    return len(tok) > 1 && byte_at(tok, 0) == 45 && byte_at(tok, 1) != 45 && !is_int(tok);
+}
+@effect(no_io, bounded)
+fn push_long(flags: &mut Flags, tok: &text) {
+    let n = len(tok);
+    let eq = text_find(tok, "=", 2);
+    if eq < 0 {
+        push(flags, Flag { key: slice(tok, 2, n), value: "", has_value: false });
+    } else {
+        push(flags, Flag { key: slice(tok, 2, eq), value: slice(tok, eq + 1, n), has_value: true });
+    }
+}
+@effect(no_io, bounded)
+fn push_short_cluster(flags: &mut Flags, tok: &text) {
+    let n = len(tok);
+    let eq = text_find(tok, "=", 1);
+    let mut stop = n;
+    if eq >= 0 {
+        stop = eq;
+    }
+    for j in 1..stop {
+        if is_char_boundary(tok, j) {
+            let end = next_char_boundary(tok, j);
+            if end == stop && eq >= 0 {
+                push(flags, Flag { key: slice(tok, j, end), value: slice(tok, eq + 1, n), has_value: true });
+            } else {
+                push(flags, Flag { key: slice(tok, j, end), value: "", has_value: false });
+            }
+        }
+    }
+}
+@effect(no_io, bounded)
+pub fn parse_args(raw: &texts) -> CliArgs {
+    let mut out = CliArgs { subcommand: "", flags: Flags(), positionals: texts() };
+    let mut after_separator = false;
+    let mut have_subcommand = false;
+    for i in 0..len(raw) {
+        let tok = text_at(raw, i);
+        if after_separator {
+            push(out.positionals, tok);
+        } else if text_eq(tok, "--") {
+            after_separator = true;
+        } else if is_long_flag(&tok) {
+            push_long(&mut out.flags, &tok);
+        } else if is_short_flag(&tok) {
+            push_short_cluster(&mut out.flags, &tok);
+        } else if !have_subcommand {
+            out.subcommand = tok;
+            have_subcommand = true;
+        } else {
+            push(out.positionals, tok);
+        }
+    }
+    return out;
+}
+@effect(no_alloc, no_io, bounded)
+pub fn has_flag(args: &CliArgs, key: &str) -> bool {
+    for f in &args.flags {
+        if text_eq(f.key, key) {
+            return true;
+        }
+    }
+    return false;
+}
+// Occurrences of `key`, so `-vvv` counts 3.
+@effect(no_alloc, no_io, bounded)
+pub fn flag_count(args: &CliArgs, key: &str) -> int {
+    let mut count = 0;
+    for f in &args.flags {
+        if text_eq(f.key, key) {
+            count = count + 1;
+        }
+    }
+    return count;
+}
+// The value of the last `key=value` occurrence, else `fallback`.
+@effect(no_io, bounded)
+pub fn flag_value_or(args: &CliArgs, key: &str, fallback: &str) -> text {
+    let mut found = false;
+    let mut value = "";
+    for f in &args.flags {
+        if f.has_value && text_eq(f.key, key) {
+            value = clone(f.value);
+            found = true;
+        }
+    }
+    if found {
+        return value;
+    }
+    return to_text(fallback);
+}
+@effect(no_io, bounded)
+pub fn positional_or(args: &CliArgs, index: int, fallback: &str) -> text {
+    if index >= 0 && index < len(args.positionals) {
+        return text_at(args.positionals, index);
+    }
+    return to_text(fallback);
+}
+@effect(no_io, bounded)
+fn spaces(n: int) -> text {
+    let mut parts = texts();
+    for i in 0..n {
+        push(parts, " ");
+    }
+    return text_join(parts, "");
+}
+@effect(no_io, bounded)
+fn spec_label(spec: &FlagSpec) -> text {
+    let mut label = "    ";
+    if len(spec.short) > 0 {
+        label = concat("-", spec.short);
+        label = concat(label, ", ");
+    }
+    label = concat(label, concat("--", spec.key));
+    if len(spec.value_name) > 0 {
+        label = concat(label, concat("=", spec.value_name));
+    }
+    return label;
+}
+// Usage line, description and an aligned flag table, one line per flag.
+@effect(no_io, bounded)
+pub fn render_help(program: &str, about: &str, specs: &FlagSpecs) -> text {
+    let mut lines = texts();
+    push(lines, concat(concat("Usage: ", program), " [SUBCOMMAND] [FLAGS] [--] [ARGS...]"));
+    if len(about) > 0 {
+        push(lines, "");
+        push(lines, to_text(about));
+    }
+    if len(specs) > 0 {
+        push(lines, "");
+        push(lines, "Flags:");
+        let mut width = 0;
+        for spec in &specs {
+            let label = spec_label(&spec);
+            if len(label) > width {
+                width = len(label);
+            }
+        }
+        for spec in &specs {
+            let label = spec_label(&spec);
+            let pad = spaces(width - len(label) + 2);
+            push(lines, concat(concat(concat("  ", label), pad), spec.help));
+        }
+    }
+    return text_join(lines, "\n");
+}
+// Library packages carry an empty entry point so `anode check <package>` accepts them.
+fn main() {}
+// ---------------------------------------------------------------- tests
+fn has(args: &CliArgs, key: &text) -> bool {
+    let mut r = false;
+    borrow k = region(key, 0, len(key)) {
+        r = has_flag(&args, &k);
+    }
+    return r;
+}
+fn value_or(args: &CliArgs, key: &text, fallback: &text) -> text {
+    let mut r = "";
+    borrow k = region(key, 0, len(key)) {
+        borrow f = region(fallback, 0, len(fallback)) {
+            r = flag_value_or(&args, &k, &f);
+        }
+    }
+    return r;
+}
+test subcommand_flags_and_positionals() {
+    let raw = ["build", "--release", "--target=x86_64-windows", "-v", "src/main.an", "extra"];
+    let args = parse_args(&raw);
+    let sub_ok = text_eq(args.subcommand, "build");
+    assert sub_ok;
+    let release = "release";
+    let has_release = has(&args, &release);
+    assert has_release;
+    let v = "v";
+    let has_v = has(&args, &v);
+    assert has_v;
+    let target = "target";
+    let none = "none";
+    let t = value_or(&args, &target, &none);
+    let t_ok = text_eq(t, "x86_64-windows");
+    assert t_ok;
+    assert len(args.flags) == 3;
+    assert len(args.positionals) == 2;
+    let p0 = text_at(args.positionals, 0);
+    let p0_ok = text_eq(p0, "src/main.an");
+    assert p0_ok;
+}
+test key_value_fallbacks_and_last_wins() {
+    let raw = ["--mode=fast", "--quiet", "--mode=slow", "--empty="];
+    let args = parse_args(&raw);
+    let empty_sub = len(args.subcommand) == 0;
+    assert empty_sub;
+    let mode = "mode";
+    let dflt = "default";
+    let m = value_or(&args, &mode, &dflt);
+    let m_ok = text_eq(m, "slow");
+    assert m_ok;
+    let quiet = "quiet";
+    let q = value_or(&args, &quiet, &dflt);
+    let q_ok = text_eq(q, "default");
+    assert q_ok;
+    let missing = "missing";
+    let has_missing = has(&args, &missing);
+    assert !has_missing;
+    let x = value_or(&args, &missing, &dflt);
+    let x_ok = text_eq(x, "default");
+    assert x_ok;
+    let empty = "empty";
+    let e = value_or(&args, &empty, &dflt);
+    assert len(e) == 0;
+}
+test separator_short_clusters_and_dashes() {
+    let raw = ["run", "-abc", "-o=out.bin", "-vvv", "-5", "-", "--", "--not-a-flag", "-x"];
+    let args = parse_args(&raw);
+    let sub_ok = text_eq(args.subcommand, "run");
+    assert sub_ok;
+    let a = "a";
+    let has_a = has(&args, &a);
+    let c = "c";
+    let has_c = has(&args, &c);
+    assert has_a && has_c;
+    let o = "o";
+    let none = "";
+    let out = value_or(&args, &o, &none);
+    let out_ok = text_eq(out, "out.bin");
+    assert out_ok;
+    let mut verbosity = 0;
+    let vkey = "v";
+    borrow k = region(vkey, 0, len(vkey)) {
+        verbosity = flag_count(&args, &k);
+    }
+    assert verbosity == 3;
+    let x = "x";
+    let has_x = has(&args, &x);
+    assert !has_x;
+    assert len(args.positionals) == 4;
+    let p0 = text_at(args.positionals, 0);
+    let p0_ok = text_eq(p0, "-5");
+    assert p0_ok;
+    let p2 = text_at(args.positionals, 2);
+    let p2_ok = text_eq(p2, "--not-a-flag");
+    assert p2_ok;
+    let mut second = "";
+    let fb = "?";
+    borrow f = region(fb, 0, len(fb)) {
+        second = positional_or(&args, 1, &f);
+    }
+    let second_ok = text_eq(second, "-");
+    assert second_ok;
+}
+test empty_argv_and_help_text() {
+    let raw = texts();
+    let args = parse_args(&raw);
+    assert len(args.subcommand) == 0;
+    assert len(args.flags) == 0;
+    assert len(args.positionals) == 0;
+    let mut specs = FlagSpecs();
+    push(specs, FlagSpec { key: "verbose", short: "v", value_name: "", help: "more output" });
+    push(specs, FlagSpec { key: "out", short: "", value_name: "PATH", help: "output file" });
+    let program = "anode-demo";
+    let about = "Demo tool.";
+    let mut help = "";
+    borrow p = region(program, 0, len(program)) {
+        borrow a = region(about, 0, len(about)) {
+            help = render_help(&p, &a, &specs);
+        }
+    }
+    let lines = text_lines(help);
+    assert len(lines) == 7;
+    let l0 = text_at(lines, 0);
+    let l0_ok = text_eq(l0, "Usage: anode-demo [SUBCOMMAND] [FLAGS] [--] [ARGS...]");
+    assert l0_ok;
+    let l5v = text_at(lines, 5);
+    let l4_ok = text_eq(l5v, "  -v, --verbose   more output");
+    assert l4_ok;
+    let l6 = text_at(lines, 6);
+    let l5_ok = text_eq(l6, "      --out=PATH  output file");
+    assert l5_ok;
+}

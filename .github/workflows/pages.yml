@@ -1,0 +1,44 @@
+# Deploys site/ to GitHub Pages on every push to main.
+# One-time setup: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+name: Deploy site to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; let an in-progress deployment finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # site/index.html links to OWNER/REPO; point them at this repository.
+      - name: Fill in repository links
+        run: sed -i "s#OWNER/REPO#${GITHUB_REPOSITORY}#g" site/index.html
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
