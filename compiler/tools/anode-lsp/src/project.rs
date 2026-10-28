@@ -650,21 +650,21 @@ mod tests {
 
     #[test]
     fn test_uri_and_verbatim_path_normalization() {
-        let verbatim = Path::new(r"\\?\c:\Users\Konstantin\examples\notebook\src\search.an");
+        let verbatim = Path::new(r"\\?\c:\Users\dev\examples\notebook\src\search.an");
         let norm1 = strip_verbatim_and_normalize_drive(verbatim);
         assert_eq!(
             norm1,
-            PathBuf::from(r"C:\Users\Konstantin\examples\notebook\src\search.an")
+            PathBuf::from(r"C:\Users\dev\examples\notebook\src\search.an")
         );
 
-        let vscode_uri = "file:///c%3A/Users/Konstantin/examples/notebook/src/search.an";
+        let vscode_uri = "file:///c%3A/Users/dev/examples/notebook/src/search.an";
         let from_uri = uri_to_path(vscode_uri).unwrap();
         assert_eq!(from_uri, norm1);
 
         let roundtrip_uri = path_to_uri(&norm1);
         assert_eq!(
             roundtrip_uri,
-            "file:///C:/Users/Konstantin/examples/notebook/src/search.an"
+            "file:///C:/Users/dev/examples/notebook/src/search.an"
         );
         assert_eq!(uri_to_path(&roundtrip_uri).unwrap(), norm1);
     }
