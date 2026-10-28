@@ -1,0 +1,2 @@
+fixtures/negative/v100-loop-push.an:byte 103: mutation while scoped loan is active: w
+frontend rejected input

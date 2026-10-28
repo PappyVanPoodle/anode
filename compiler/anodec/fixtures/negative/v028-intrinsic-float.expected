@@ -1,0 +1,2 @@
+fixtures/negative/v028-intrinsic-float.an:byte 32: integer intrinsic requires integer operands
+frontend rejected input

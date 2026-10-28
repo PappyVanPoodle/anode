@@ -1,0 +1,2 @@
+fixtures/negative/v110-soa-pop-borrow.an:byte 132: mutation while scoped loan is active: rows
+frontend rejected input

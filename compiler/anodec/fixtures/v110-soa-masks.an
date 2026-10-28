@@ -1,0 +1,73 @@
+// v1.1.0 self-hosted regression: stage target, 1.0.0-seed oracle and known-output
+// golden (fixtures/v110-soa-masks-golden.mjs). Unsigned constant-mask bit_and
+// conversions, SoA push/pop/replace/clone/reassign/drop of owning and scalar-only
+// rows, inner range loops whose affine i+bias and base-i must still fault exactly,
+// and signed power-of-two remainders of negative values; unproven forms stay checked.
+struct Sample { key:u64, weight:int, label:text }
+soa vector Samples(Sample);
+struct Tick { at:int, delta:int }
+soa vector Ticks(Tick);
+vector Lanes(int);
+fn mix(seed:u64,value:int)->u64 {
+    let h=wrapping_mul(bit_xor(seed,u64(value)),u64(1099511628211));
+    return bit_xor(h,shr(h,29));
+}
+fn lane_of(h:u64)->int { return int(bit_and(h,u64(255))); }
+fn wide_of(h:u64)->int { return int(bit_and(h,u64(9223372036854775807))); }
+fn narrow_of(v:u32)->int { return int(bit_and(v,u32(4095))); }
+fn raw_of(h:u64,mask:u64)->int { return int(bit_and(h,mask)); }
+fn build(count:int,seed:u64)->Samples {
+    let mut rows=Samples();let mut h=seed;
+    for i in 0..count { h=mix(h,i);push(rows,Sample{key:h,weight:lane_of(h)-128,label:int_text(i%7)}); }
+    return rows;
+}
+fn histogram(rows:&Samples)->Lanes {
+    let mut lanes=Lanes();for i in 0..16 { push(lanes,0); }
+    for row in &rows { let slot=lane_of(row.key)%16;borrow mut cell=at(lanes,slot) { cell=cell+1; } }
+    return lanes;
+}
+fn fold_labels(rows:&Samples)->int {
+    let mut total=0;for row in &rows { total=(total*7+len(row.label)+parse_int(row.label))%1000003; }
+    return total;
+}
+fn churn(rows:&mut Samples,keep:int)->int {
+    let mut dropped=0;
+    while len(rows)>keep { let last=pop(rows);dropped=dropped+last.weight+len(last.label); }
+    return dropped;
+}
+fn block(start:int,bias:int,base:int)->int {
+    let mut acc=0;
+    for i in start..start+4 { let up=i+bias;let down=base-i;acc=bit_xor(acc,bit_xor(up,down)); }
+    return acc;
+}
+fn main(){
+    let mut count=48;let mut mode="run";
+    if args_count()>0 { mode=arg(0);count=parse_int(arg(1)); }
+    let seed=u64(1469598103934665603);
+    let mut rows=build(count,seed);print len(rows);
+    let lanes=histogram(&rows);let mut spread=0;for value in &lanes { spread=spread*3+value; }print spread;
+    let mut wide=0;let mut narrow=0;let mut weights=0;
+    for row in &rows { wide=bit_xor(wide,wide_of(row.key));narrow=narrow+narrow_of(u32(lane_of(row.key)*16+1));weights=weights+row.weight; }
+    print wide;print narrow;print weights;
+    if text_eq(mode,"soa-index") { borrow r=at(rows,count) { print r.weight; } }
+    let mut ticks=Ticks();
+    for i in 0..count { push(ticks,Tick{at:i*3,delta:i%8-i/4}); }
+    let snapshot=clone(ticks);
+    if len(ticks)>0 { replace(ticks,0,Tick{at:-1,delta:7}); }
+    let mut tick_sum=0;for t in &ticks { tick_sum=tick_sum+t.at*2+t.delta; }
+    let mut snap_sum=0;for t in &snapshot { snap_sum=snap_sum+t.at+t.delta; }
+    print tick_sum;print snap_sum;print fold_labels(&rows);
+    let dropped=churn(&mut rows,count/2);print dropped;print len(rows);
+    rows=build(3,u64(7));print len(rows);print fold_labels(&rows);
+    if text_eq(mode,"pop-empty") { let mut empty=Samples();let gone=pop(empty);print gone.weight; }
+    let mut negatives=0;for i in 0..6 { let v=0-i*256;let w=v-3;negatives=negatives*10+v%256+v/256+w%256; }print negatives;
+    let mut bias=1000;let mut base=-1000;
+    if text_eq(mode,"overflow") { bias=9223372036854775807-13; }
+    if text_eq(mode,"underflow") { base=-9223372036854775807-1+9; }
+    for b in 0..5 { print block(b*4,bias,base); }
+    let mut table=Lanes();for i in 0..256 { push(table,i*2); }
+    let probe=mix(seed,count);print at(table,lane_of(probe));
+    if text_eq(mode,"lane-index") { print at(table,int(bit_or(bit_and(probe,u64(511)),u64(256)))); }
+    if text_eq(mode,"convert") { print raw_of(bit_or(probe,shl(u64(1),63)),bit_not(u64(0))); }
+    if text_eq(mode,"zero-rem") { let zero=len(mode)-len(mode);print count%zero; }
+}

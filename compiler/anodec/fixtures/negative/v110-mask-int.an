@@ -1,0 +1,1 @@
+fn lane(h:u64)->int { return bit_and(h,u64(255)); }fn main(){let masked=lane(u64(9));print masked;}

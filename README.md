@@ -10,6 +10,7 @@ Anode is a compiled systems language for Windows x64. Source files use the `.an`
 - A function can list the struct fields it may use (`&mut Counter.{ mut value, step }`), declare effects it must not have (`@effect(no_alloc, no_io, bounded)`), and state `requires` / `ensures` conditions. The compiler checks all three.
 - Arithmetic, array bounds and number conversions are checked in every build mode.
 - `anode run` builds with Cranelift. `anode build --release` generates C and compiles it with MSVC.
+- `anodec` is a second compiler, written in Anode, that compiles itself. It supports a subset of the language, adds `{ std = true }` dependencies and `--debug` builds with a `.pdb`, and generates C for MSVC. See [anodec](#anodec).
 - Programs can call `http://` and `https://` endpoints with `http_request(url, body)`, or `http_request(url, body, headers)` to send headers such as `Authorization`, when `net = true` is set in `Anode.toml`. `keys(m)` lists a map's keys. A source file may be up to 16 MiB and a project up to 256 MiB.
 
 Version **1.3.0** · MIT License · [Download](https://github.com/PappyVanPoodle/anode/releases/latest) · [Language guide](AGENTS.md) · [Standard library API](docs/API-DOCS.md) · [Compiler source](https://github.com/PappyVanPoodle/anode/tree/main/compiler)
@@ -74,6 +75,21 @@ You need Windows 10 or 11 (x64) and Visual Studio 2022 Build Tools with the C++ 
 
 On the 9-file standard library showcase, `anode check` takes about 23 ms, and running its 35 tests after an edit takes about 0.27 s.
 
+### anodec
+
+`bin\anodec.exe` is a second compiler, written in Anode ([compiler/anodec](https://github.com/PappyVanPoodle/anode/tree/main/compiler/anodec)). The copy in the zip was built by `anodec` itself. It generates C and compiles it with `cl.exe`.
+
+| Command | What it does |
+| :--- | :--- |
+| `anodec new DIR` | Creates `Anode.toml`, `src/main.an`, `AGENTS.md` and `CLAUDE.md` |
+| `anodec add json cli` | Adds `json = { std = true }` and `cli = { std = true }` to `[dependencies]` |
+| `anodec check . --json` | Checks the project; diagnostics with file and line |
+| `anodec test .` | Runs each `test` block in its own process |
+| `anodec run . -- ARGS` | Builds `.zenith\build\<name>.exe`, runs it and returns its exit code |
+| `anodec build . -o app.exe --debug` | Builds with `/Od /Zi` and `#line` directives, and writes `app.pdb` |
+
+`anodec` covers less of the language than `anode`. It has no field views, `requires` / `ensures`, threads, network builtins, binary file I/O or `??` holes. It also accepts two things `anode` 1.3.0 rejects: `for x in &c` over `ints`, `texts`, `[T; N]` and map keys, and `concat` with up to 16 arguments. It finds MSVC through `anode`'s cached toolchain, or through vswhere. [compiler/anodec/README.md](https://github.com/PappyVanPoodle/anode/blob/main/compiler/anodec/README.md) has the details and the build steps.
+
 ## Standard library
 
 `packages/` has eight libraries written in Anode. None of them may read files, start processes or use the network. Add them to a project as path dependencies; the path is relative to your `Anode.toml`, or absolute:
@@ -82,6 +98,8 @@ On the 9-file standard library showcase, `anode check` takes about 23 ms, and ru
 [dependencies]
 json = { path = "C:/Tools/anode-1.3.0-windows-x64/packages/json" }
 ```
+
+With `anodec`, `anodec add json` writes `json = { std = true }` instead, which finds the package in `%ANODE_HOME%\packages`. `anode` 1.3.0 does not read that form yet. Under `anodec`, `bench`, `cli`, `csv_jsonl`, `docgen`, `glob_regex` and `json` build and pass their tests; `encoding` and `markdown` need `anode`.
 
 | Package | Contents |
 | :--- | :--- |
@@ -263,7 +281,7 @@ Stats scan(const char *src, size_t len) {
 ## Tests
 
 - 617 compiler tests passed in the 1.3.0 release run (62 test targets). Several features were added after that run: the `AGENTS.md` / `CLAUDE.md` files written by `anode new`, `keys`, `http_request` and the larger source limits. Their tests are in the 1.3 runtime test target, which passes on the current build (10 tests, including `keys` on the native, C and AddressSanitizer builds and `http_request` round trips through WinHTTP). The full suite has not been rerun since these additions.
-- The compiler frontend written in Anode was built in three stages; Stage 1, 2 and 3 produce identical C (796,798 bytes).
+- `anodec` has 50 tests, which pass under both `anode` and `anodec`. Stage 1 (built by `anode`), Stage 2 and 3 (built by `anodec`), and a fourth build of `anodec` by itself all produce identical C (988,327 bytes). For programs that do not use the new features, `anodec` produces the same C as the previous version of the frontend.
 - The standard library and the showcase have 35 tests: 31 in the packages and 4 that combine packages.
 
 ## License
@@ -284,8 +302,9 @@ THIRD-PARTY/            notices for third-party components in the SDK
 docs/                   API-DOCS.md, BENCHMARK.md, LANGUAGE.md, SAFETY.md
 packages/               the eight standard library packages
 examples/               stdlib-showcase
-compiler/               Rust source of the compiler and language server (repository only)
+compiler/               Rust source of the compiler and language server; anodec/ is the
+                        Anode source of anodec (repository only)
 site/                   GitHub Pages landing page (repository only)
 ```
 
-The compiler binaries (`anode.exe`, `zn.exe`, `anode-lsp.exe`) ship in the release zip; [compiler/](https://github.com/PappyVanPoodle/anode/tree/main/compiler) has their source and build steps. Further reading: [docs/LANGUAGE.md](docs/LANGUAGE.md) (language reference by release) and [docs/SAFETY.md](docs/SAFETY.md) (safety boundary and capability model).
+The compiler binaries (`anode.exe`, `zn.exe`, `anode-lsp.exe`, `anodec.exe`) ship in the release zip; [compiler/](https://github.com/PappyVanPoodle/anode/tree/main/compiler) has their source and build steps. Further reading: [docs/LANGUAGE.md](docs/LANGUAGE.md) (language reference by release) and [docs/SAFETY.md](docs/SAFETY.md) (safety boundary and capability model).

@@ -1,0 +1,1 @@
+vector W(int);fn main(){let mut w=W();push(w,1);let mut out=W();for value in &w { push(out,value);push(w,value); }}

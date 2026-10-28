@@ -1,0 +1,2 @@
+fixtures/negative/type.an:byte 12: type mismatch: expected int, got bool
+frontend rejected input

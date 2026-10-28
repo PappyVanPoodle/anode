@@ -1,0 +1,1 @@
+struct S{label:text,n:int}soa vector Ss(S);fn main(){let mut rows=Ss();push(rows,S{label:"a",n:1});for row in &rows { let taken=row.label;print taken; }}

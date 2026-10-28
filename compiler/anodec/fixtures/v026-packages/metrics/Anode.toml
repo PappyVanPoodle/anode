@@ -1,0 +1,9 @@
+[package]
+name = "metrics"
+version = "0.1.0"
+[build]
+entry = "lib.an"
+[capabilities]
+process_args = true
+[dependencies]
+

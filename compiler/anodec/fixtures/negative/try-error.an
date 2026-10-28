@@ -1,0 +1,4 @@
+enum Input{Ok(int),Err(text)}
+enum Output{Ok(int),Err(int)}
+fn work(value:Input)->Output{let payload=try value;return Output::Ok(payload);}
+fn main(){}

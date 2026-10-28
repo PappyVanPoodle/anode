@@ -1,0 +1,1 @@
+struct Row{x:int}soa vector Rows(Row);fn main(){let rows=Rows();borrow window=region(rows,0,0){print len(window);}}

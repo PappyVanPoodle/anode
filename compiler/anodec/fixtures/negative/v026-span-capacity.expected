@@ -1,0 +1,2 @@
+fixtures/negative/v026-span-capacity.an:byte 76: capacity is unavailable on scoped vector span
+frontend rejected input

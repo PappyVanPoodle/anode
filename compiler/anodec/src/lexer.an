@@ -1,0 +1,153 @@
+// UTF-8 byte spans stay in one owner. Identifiers, like the seed, are ASCII.
+pub struct Token { kind:int, start:int, end:int }
+pub vector TokenList(Token);
+pub struct Tokens { source:text, entries:TokenList, error:text, error_at:int }
+
+@effect(no_alloc, no_io, bounded)
+fn digit(c:int)->bool { return c>=48 && c<=57; }
+@effect(no_alloc, no_io, bounded)
+fn letter(c:int)->bool { return (c>=65 && c<=90) || (c>=97 && c<=122) || c==95; }
+@effect(no_alloc, no_io, bounded)
+fn whitespace(c:int)->bool {
+    return (c>=9 && c<=13) || c==32 || c==133 || c==160 || c==5760
+        || (c>=8192 && c<=8202) || c==8232 || c==8233 || c==8239 || c==8287 || c==12288;
+}
+@effect(no_alloc, no_io, bounded)
+fn symbol(c:int)->bool {
+    return c==40 || c==41 || c==123 || c==125 || c==91 || c==93 || c==44
+        || c==58 || c==59 || c==43 || c==45 || c==42 || c==47 || c==37
+        || c==61 || c==33 || c==60 || c==62 || c==46 || c==38 || c==64;
+}
+@effect(no_alloc, no_io, bounded)
+fn pair(a:int,b:int)->bool {
+    return (a==45 && b==62) || (a==61 && b==62) || (a==61 && b==61)
+        || (a==33 && b==61) || (a==60 && b==61) || (a==62 && b==61)
+        || (a==38 && b==38) || (a==124 && b==124) || (a==58 && b==58)
+        || (a==46 && b==46);
+}
+fn append(tokens:&mut Tokens,kind:int,start:int,end:int) {
+    push(tokens.entries,Token{kind:kind,start:start,end:end});
+}
+fn fail(tokens:&mut Tokens,at:int,message:text) {
+    tokens.error_at=at; tokens.error=message;
+}
+pub fn scan(source:text)->Tokens {
+    let mut tokens=Tokens{source:source,entries:TokenList(),error:"",error_at:0};
+    let mut i=0;
+    if len(tokens.source)>4194304 { fail(&mut tokens,0,"source exceeds 4 MiB bound"); }
+    while i<len(tokens.source) && len(tokens.error)==0 {
+        let c=codepoint_at(tokens.source,i);
+        if whitespace(c) { i=next_char_boundary(tokens.source,i); continue; }
+        if c==47 && i+1<len(tokens.source) && byte_at(tokens.source,i+1)==47 {
+            while i<len(tokens.source) {
+                if byte_at(tokens.source,i)==10 { break; }
+                i=next_char_boundary(tokens.source,i);
+            }
+            continue;
+        }
+        if c==47 && i+1<len(tokens.source) && byte_at(tokens.source,i+1)==42 {
+            fail(&mut tokens,i,"block comments are outside the subset"); break;
+        }
+        let start=i;
+        if letter(c) {
+            i=i+1;
+            while i<len(tokens.source) && (letter(byte_at(tokens.source,i)) || digit(byte_at(tokens.source,i))) { i=i+1; }
+            append(&mut tokens,1,start,i); continue;
+        }
+        if digit(c) {
+            let mut kind=2; i=i+1;
+            while i<len(tokens.source) && digit(byte_at(tokens.source,i)) { i=i+1; }
+            if i+1<len(tokens.source) && byte_at(tokens.source,i)==46 && digit(byte_at(tokens.source,i+1)) {
+                kind=5; i=i+1;
+                while i<len(tokens.source) && digit(byte_at(tokens.source,i)) { i=i+1; }
+            }
+            if i<len(tokens.source) && (byte_at(tokens.source,i)==101 || byte_at(tokens.source,i)==69) {
+                kind=5; i=i+1;
+                if i<len(tokens.source) && (byte_at(tokens.source,i)==43 || byte_at(tokens.source,i)==45) { i=i+1; }
+                if i>=len(tokens.source) || !digit(byte_at(tokens.source,i)) {
+                    fail(&mut tokens,i,"malformed exponent"); break;
+                }
+                while i<len(tokens.source) && digit(byte_at(tokens.source,i)) { i=i+1; }
+            }
+            let number=slice(tokens.source,start,i);
+            if kind==5 {
+                if !is_f64(number) { fail(&mut tokens,start,"nonfinite number"); break; }
+            } else if !is_int(number) { fail(&mut tokens,start,"integer overflow"); break; }
+            append(&mut tokens,kind,start,i); continue;
+        }
+        if c==34 {
+            i=i+1; let mut closed=false;
+            while i<len(tokens.source) {
+                let ch=codepoint_at(tokens.source,i);
+                if ch==34 { closed=true; i=i+1; break; }
+                if ch==10 || ch==13 { fail(&mut tokens,i,"newline in string"); break; }
+                if ch==92 {
+                    i=i+1;
+                    if i>=len(tokens.source) { break; }
+                    let escape=byte_at(tokens.source,i);
+                    if escape!=110 && escape!=114 && escape!=116 && escape!=34 && escape!=92 {
+                        fail(&mut tokens,i,"unknown string escape"); break;
+                    }
+                }
+                i=next_char_boundary(tokens.source,i);
+            }
+            if len(tokens.error)>0 { break; }
+            if !closed { fail(&mut tokens,start,"unterminated string"); break; }
+            append(&mut tokens,3,start,i); continue;
+        }
+        if i+1<len(tokens.source) && pair(c,byte_at(tokens.source,i+1)) { i=i+2; }
+        else {
+            if !symbol(c) { fail(&mut tokens,start,"unsupported character"); break; }
+            i=i+1;
+        }
+        append(&mut tokens,4,start,i);
+    }
+    append(&mut tokens,0,i,i); return tokens;
+}
+pub fn spelling(tokens:&Tokens,index:int)->text {
+    borrow token=at(tokens.entries,index) { return slice(tokens.source,token.start,token.end); }
+}
+pub fn view_equals(value:&str,expected:&text)->bool { return text_eq(value,expected); }
+pub fn is(tokens:&Tokens,index:int,expected:text)->bool {
+    borrow token=at(tokens.entries,index) {
+        borrow part=region(tokens.source,token.start,token.end) { return view_equals(&part,&expected); }
+    }
+}
+pub fn line_column(source:&text,offset:int)->ints {
+    let mut line=1; let mut column=1; let mut i=0;
+    while i<offset && i<len(source) {
+        if byte_at(source,i)==10 { line=line+1; column=1; }
+        else { column=column+1; }
+        i=next_char_boundary(source,i);
+    }
+    return [line,column];
+}
+
+test unicode_and_comments() {
+    let tokens=scan("// café 🦜\r\nlet s=\"é\\n\";");
+    assert len(tokens.error)==0; assert len(tokens.entries)==6;
+    for token in &tokens.entries {
+        assert is_char_boundary(tokens.source,token.start);
+        assert is_char_boundary(tokens.source,token.end);
+    }
+    let location=line_column(&tokens.source,16); assert at(location,0)==2;
+}
+test lex_errors_and_ranges() {
+    let bad=scan("\"bad\\q\""); assert len(bad.error)>0; assert bad.error_at==5;
+    let comment=scan("/* no */"); assert len(comment.error)>0;
+    let range=scan("0..3 1.25e+2"); assert len(range.error)==0;
+    let token=spelling(&range,1); let expected=".."; assert text_eq(token,expected);
+    let overflow=scan("9223372036854775808"); assert len(overflow.error)>0;
+}
+test arena_id_and_try_are_tokenized_without_seed_try_syntax() {
+    let tokens=scan("arena Slots(int); fn work(h:id(Slots)){let n=try result_value();}");
+    assert len(tokens.error)==0;
+    let first=spelling(&tokens,0); let expected="arena"; assert text_eq(first,expected);
+    let mut tries=0;
+    for i in 0..len(tokens.entries) { if is(&tokens,i,"try") { tries=tries+1; } }
+    assert tries==1;
+}
+
+test soa_span_package_tokens_preserve_locations() {
+    let tokens=scan("soa vector Rows(model::Row);fn sum(rows:&[pkg::Scores]){borrow view=region(rows,1,2){}}");assert len(tokens.error)==0;let expected="soa";let first=spelling(&tokens,0);assert text_eq(first,expected);let mut brackets=0;for i in 0..len(tokens.entries){if is(&tokens,i,"["){brackets=brackets+1;}}assert brackets==1;
+}

@@ -1,0 +1,19 @@
+pub vector Numbers(int);
+pub struct Packet { label:text, numbers:Numbers }
+pub vector Packets(Packet);
+pub map Table(text,Packet);
+pub enum Event { Ready(Packet), Empty, Ignored(text) }
+impl Packet {
+    pub fn score(self:&Self)->int {
+        let mut total=0;for value in &self.numbers { total=total+value; }return total;
+    }
+}
+pub fn packet(number:int,label:text)->Packet {
+    let mut numbers=Numbers();push(numbers,number);push(numbers,number+1);
+    return Packet{label:label,numbers:numbers};
+}
+pub fn select(number:int)->Event {
+    if number%3==0 { return Event::Ready(packet(number,int_text(number))); }
+    else if number%3==1 { return Event::Empty(); }
+    else { return Event::Ignored(concat("ignored-",int_text(number))); }
+}

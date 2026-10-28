@@ -1,0 +1,2 @@
+fixtures/negative/v026-shared.an:byte 84: mutation through shared borrow
+frontend rejected input

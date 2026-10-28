@@ -1,0 +1,2 @@
+fixtures/negative/nesting.an: parse: 1:112: syntax nesting exceeds 96
+frontend rejected input

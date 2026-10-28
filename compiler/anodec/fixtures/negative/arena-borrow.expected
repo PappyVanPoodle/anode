@@ -1,0 +1,2 @@
+fixtures/negative/arena-borrow.an:byte 100: mutation while scoped loan is active: a
+frontend rejected input

@@ -1,0 +1,2 @@
+fixtures/negative/v026-soa-element.an:byte 0: SoA element must be a nonempty record
+frontend rejected input

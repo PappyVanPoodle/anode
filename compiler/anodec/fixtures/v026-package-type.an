@@ -1,0 +1,1 @@
+fn main(){let values=east::model::Scores();borrow view=region(values,0,0){print west::sum(&view);}}

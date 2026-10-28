@@ -1,0 +1,6 @@
+[package]
+name = "encoding"
+version = "0.1.0"
+
+[build]
+entry = "src/lib.an"

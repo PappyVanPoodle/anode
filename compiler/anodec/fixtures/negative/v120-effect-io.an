@@ -1,0 +1,4 @@
+// no_io rejects argument/console/file builtins even without allocation.
+@effect(no_alloc, no_io, bounded)
+fn lanes(frame:&[u8;8])->u32 { return wrapping_add(read_u32_be(frame,0),u32(args_count())); }
+fn main(){let frame=[u8(1);8];print lanes(&frame);}

@@ -1,0 +1,9 @@
+anode-bootstrap-ir 1
+unit 0 lexer nodes=1291 roots=19
+unit 1 ast nodes=861 roots=35
+unit 2 parser nodes=2948 roots=27
+unit 3 checker nodes=10185 roots=57
+unit 4 ir_dump nodes=408 roots=4
+unit 5 cgen nodes=7725 roots=52
+unit 6 main nodes=1919 roots=32
+summary units=7 symbols=222 functions=195 typed=16643 resolved=6805 moves=263

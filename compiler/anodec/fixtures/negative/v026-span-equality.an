@@ -1,0 +1,1 @@
+vector V(int);fn main(){let v=V();borrow window=region(v,0,0){print window==window;}}

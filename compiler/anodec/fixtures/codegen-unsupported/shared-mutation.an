@@ -1,0 +1,3 @@
+fn change(value:&mut text)->int { value="changed";return 1; }
+fn read(value:&text,count:int) {}
+fn main() { let mut value="owner";read(&value,change(&mut value)); }

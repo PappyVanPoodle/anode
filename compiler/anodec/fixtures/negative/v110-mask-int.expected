@@ -1,0 +1,2 @@
+fixtures/negative/v110-mask-int.an:byte 22: type mismatch: expected int, got u64
+frontend rejected input

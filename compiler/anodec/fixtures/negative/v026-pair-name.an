@@ -1,0 +1,1 @@
+vector V(int);fn main(){let mut v=V();push(v,1);push(v,2);borrow mut (a,a)=at_pair(v,0,1){print a;}}

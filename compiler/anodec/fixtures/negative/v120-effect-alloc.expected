@@ -1,0 +1,2 @@
+fixtures/negative/v120-effect-alloc.an:byte 101: effect contract no_alloc violated in tag (including transitive calls)
+frontend rejected input

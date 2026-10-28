@@ -1,0 +1,2 @@
+fixtures/negative/v026-resize.an:byte 81: mutation while scoped loan is active: v
+frontend rejected input

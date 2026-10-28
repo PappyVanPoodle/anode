@@ -1,0 +1,3 @@
+fixtures/negative/v026-escape.an:byte 78: cannot move scoped vector span
+fixtures/negative/v026-escape.an:byte 66: let requires a storable value; references need scoped borrow
+frontend rejected input

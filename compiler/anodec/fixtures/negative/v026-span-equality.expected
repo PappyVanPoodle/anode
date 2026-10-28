@@ -1,0 +1,2 @@
+fixtures/negative/v026-span-equality.an:byte 74: scoped vector spans have no scalar operators
+frontend rejected input

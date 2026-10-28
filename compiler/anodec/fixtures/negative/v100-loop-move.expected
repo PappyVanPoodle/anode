@@ -1,0 +1,3 @@
+fixtures/negative/v100-loop-move.an:byte 107: owner accessed while scoped loan is active: w
+fixtures/negative/v100-loop-move.an:byte 64: outer owner moved in repeatable loop: w
+frontend rejected input

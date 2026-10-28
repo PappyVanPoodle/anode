@@ -1,0 +1,3 @@
+fixtures/negative/unknown.an:byte 18: unknown name/field missing
+fixtures/negative/unknown.an:byte 12: print supports int/bool/text/str
+frontend rejected input

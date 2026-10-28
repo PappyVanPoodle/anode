@@ -1,0 +1,1123 @@
+pub struct Symbol { kind:int, unit:int, node:int, typ:text }
+pub map Symbols(text,Symbol);
+pub map Types(text,text);
+// nonnegative: name-use nodes proven >= 0 (immutable int bindings whose
+// initializer, or range-loop start, is proven non-negative). C lowering uses it.
+// v1.2: lows/highs are proven int intervals of name-use nodes (C lowering of
+// fixed-array wire stores); effects/callers/callees/current record each
+// function's local effects and user call edges for the @effect pass.
+pub struct Report { symbols:Symbols, types:Types, diagnostics:texts, resolved:int, moves:int, functions:int, nonnegative:Marks, lows:Marks, highs:Marks, effects:Marks, callers:texts, callees:texts, current:text }
+struct Local { typ:text, mutable:bool }
+map Locals(text,Local);
+pub map Marks(text,int);
+map Contracts(text,text);
+struct Loan { path:text, exclusive:bool }
+vector Loans(Loan);
+struct State { locals:Locals, names:texts, dead:Marks, moved_names:texts, loans:Loans, return_type:text, loop_depth:int, exited:bool, aliasing:bool, nonneg:Marks, lows:Marks, highs:Marks }
+
+fn empty_state(return_type:text)->State {
+    return State{locals:Locals(),names:texts(),dead:Marks(),moved_names:texts(),loans:Loans(),return_type:return_type,loop_depth:0,exited:false,aliasing:false,nonneg:Marks(),lows:Marks(),highs:Marks()};
+}
+// Local effect bits: 1 may allocate, 2 performs I/O, 4 contains while, 8 may wait.
+fn note_effect(report:&mut Report,bits:int) {
+    if len(report.current)==0 || bits==0 { return; }
+    let mut old=0; if contains_key(report.effects,report.current) { old=clone_get(report.effects,report.current); }
+    let key=clone(report.current); let merged=bit_or(old,bits); insert(report.effects,key,merged);
+}
+fn note_call(report:&mut Report,callee:&text) {
+    if len(report.current)==0 { return; }
+    let caller=clone(report.current); push(report.callers,caller); push(report.callees,clone(callee));
+}
+fn diagnostic(program:&crate::ast::Program,report:&mut Report,unit:int,index:int,message:text) {
+    let path=crate::ast::path(&program,unit); borrow ast_unit_1=at(program.units,unit) { borrow node=at(ast_unit_1.tree.nodes,index) {
+    push(report.diagnostics,concat(path,concat(":byte ",concat(int_text(node.pos),concat(": ",message)))));
+} } }
+fn normal(program:&crate::ast::Program,module:&text,raw:&text)->text {
+    let name=crate::ast::base(&raw); let mut prefix="";
+    if text_starts_with(raw,"&mut ") { prefix="&mut "; }
+    else if text_starts_with(raw,"&") { prefix="&"; }
+    let mut value=clone(name);
+    if text_eq(value,"i64") { value="int"; }
+    if crate::ast::is_span(&value) { let owner=crate::ast::span_owner(&value); return concat(prefix,concat("[",concat(crate::ast::resolve(&program,&module,&owner),"]"))); }
+    if crate::ast::is_id(&value) { let owner=crate::ast::id_owner(&value); let canonical=crate::ast::resolve(&program,&module,&owner); return concat(prefix,concat("id(",concat(canonical,")"))); }
+    if crate::ast::is_fixed(&value) { return concat(prefix,crate::ast::canonical_fixed(&value)); }
+    if !crate::ast::primitive(&value) && !crate::ast::builtin_type(&value) { value=crate::ast::resolve(&program,&module,&value); }
+    return concat(prefix,value);
+}
+// v1.2 fixed arrays follow the language limits: integer elements, 1..65536
+// elements and at most 64 KiB of inline storage.
+fn fixed_problem(element:&text,count:int)->text {
+    if !integer_type(&element) { return "fixed array element must be an integer type"; }
+    let mut width=8; if text_eq(element,"i16") || text_eq(element,"u16") { width=16; } if text_eq(element,"i32") || text_eq(element,"u32") { width=32; } if text_eq(element,"int") || text_eq(element,"i64") || text_eq(element,"u64") { width=64; }
+    if count<1 || count>65536 || count*(width/8)>65536 { return "fixed array length must be 1..65536 with at most 64 KiB of storage"; }
+    return "";
+}
+fn validate_type(program:&crate::ast::Program,report:&mut Report,unit:int,index:int,raw:&text,stored:bool)->text {
+    let module=crate::ast::module_name(&program,unit); let typ=normal(&program,&module,&raw); let base=crate::ast::base(&typ);
+    if crate::ast::is_span(&base) {
+        let owner=crate::ast::span_owner(&base);
+        if !text_starts_with(typ,"&") || stored { diagnostic(&program,&mut report,unit,index,"vector spans are borrowed-only nonowning parameters"); }
+        if !contains_key(report.symbols,owner) { diagnostic(&program,&mut report,unit,index,"span requires nominal contiguous vector"); }
+        else { let symbol=clone_get(report.symbols,owner); borrow ast_unit_2=at(program.units,symbol.unit) { borrow declaration=at(ast_unit_2.tree.nodes,symbol.node) { if symbol.kind!=4 || declaration.flag>=2 { diagnostic(&program,&mut report,unit,index,"span requires nominal contiguous vector; SoA rows are noncontiguous"); } } } }
+        return typ;
+    }
+    if crate::ast::is_id(&base) {
+        let owner=crate::ast::id_owner(&base);
+        if !contains_key(report.symbols,owner) { diagnostic(&program,&mut report,unit,index,"id requires a declared arena"); }
+        else { let symbol=clone_get(report.symbols,owner); if symbol.kind!=25 { diagnostic(&program,&mut report,unit,index,"id requires a nominal arena"); } }
+        return typ;
+    }
+    if crate::ast::is_fixed(&base) {
+        let element=crate::ast::fixed_element(&base); let problem=fixed_problem(&element,crate::ast::fixed_length(&base));
+        if len(problem)>0 { diagnostic(&program,&mut report,unit,index,problem); }
+        return typ;
+    }
+    if !crate::ast::primitive(&base) && !crate::ast::builtin_type(&base) {
+        if !contains_key(report.symbols,base) { diagnostic(&program,&mut report,unit,index,concat("unknown type ",base)); }
+        else { let symbol=clone_get(report.symbols,base);
+            if (symbol.kind<2 || symbol.kind>5) && symbol.kind!=25 { diagnostic(&program,&mut report,unit,index,"type name denotes a function/variant"); }
+        }
+    }
+    if text_eq(typ,"&mut str") { diagnostic(&program,&mut report,unit,index,"mutable str is unsupported"); }
+    if stored && (text_starts_with(typ,"&") || text_eq(typ,"str") || text_eq(typ,"unit")) {
+        diagnostic(&program,&mut report,unit,index,"stored fields/elements require a finite owned or scalar type");
+    }
+    return typ;
+}
+fn put_symbol(program:&crate::ast::Program,report:&mut Report,key:text,symbol:Symbol) {
+    if contains_key(report.symbols,key) { diagnostic(&program,&mut report,symbol.unit,symbol.node,concat("duplicate declaration ",key)); }
+    else { insert(report.symbols,key,symbol); }
+}
+fn collect(program:&crate::ast::Program,report:&mut Report) {
+    let mut modules=Marks();
+    for unit in 0..len(program.units) {
+        let module=crate::ast::module_name(&program,unit);
+        if contains_key(modules,module) { push(report.diagnostics,concat("duplicate module ",module)); }
+        insert(modules,clone(module),1);
+        borrow source=at(program.units,unit) {
+            if len(source.tree.error)>0 { push(report.diagnostics,concat(source.path,concat(": parse: ",source.tree.error))); continue; }
+            for i in 0..len(source.tree.roots) {
+                let index=at(source.tree.roots,i); borrow ast_unit_3=at(program.units,unit) { borrow node=at(ast_unit_3.tree.nodes,index) {
+                if (node.kind>=2 && node.kind<=6) || node.kind==25 {
+                    let key=crate::ast::resolve(&program,&module,&node.name);
+                    let declaration=Symbol{kind:node.kind,unit:unit,node:index,typ:clone(node.typ)};
+                    put_symbol(&program,&mut report,clone(key),declaration);
+                    if node.kind==3 {
+                        for j in 0..len(node.children) {
+                            let member_index=at(node.children,j); borrow ast_unit_4=at(program.units,unit) { borrow member=at(ast_unit_4.tree.nodes,member_index) {
+                            let variant=crate::ast::key(&key,&member.name);
+                            put_symbol(&program,&mut report,variant,Symbol{kind:9,unit:unit,node:member_index,typ:clone(key)});
+                        } } }
+                    }
+                }
+            } } }
+        }
+    }
+}
+fn member(program:&crate::ast::Program,report:&Report,typ:&text,name:&text)->text {
+    if text_eq(typ,"ProcessOutput") {
+        if text_eq(name,"status") { return "int"; }
+        if text_eq(name,"stdout") || text_eq(name,"stderr") { return "text"; }
+        return "?";
+    }
+    if !contains_key(report.symbols,typ) { return "?"; }
+    let symbol=clone_get(report.symbols,typ); borrow ast_unit_5=at(program.units,symbol.unit) { borrow node=at(ast_unit_5.tree.nodes,symbol.node) {
+    let module=crate::ast::module_name(&program,symbol.unit);
+    for i in 0..len(node.children) {
+        borrow ast_unit_6=at(program.units,symbol.unit) { borrow field=at(ast_unit_6.tree.nodes,at(node.children,i)) {
+        if text_eq(field.name,name) { return normal(&program,&module,&field.typ); }
+    } } }
+    return "?";
+} } }
+fn element(program:&crate::ast::Program,report:&Report,typ:&text,which:int)->text {
+    let base=crate::ast::collection(&typ);
+    if text_eq(base,"ints") { return "int"; }
+    if text_eq(base,"texts") { return "text"; }
+    if crate::ast::is_fixed(&base) { if which==0 { return crate::ast::fixed_element(&base); } return "?"; }
+    if !contains_key(report.symbols,base) { return "?"; }
+    let symbol=clone_get(report.symbols,base); borrow ast_unit_7=at(program.units,symbol.unit) { borrow node=at(ast_unit_7.tree.nodes,symbol.node) {
+    if (node.kind!=4 && node.kind!=5 && node.kind!=25) || which>=len(node.children) { return "?"; }
+    borrow ast_unit_8=at(program.units,symbol.unit) { borrow field=at(ast_unit_8.tree.nodes,at(node.children,which)) {
+    let module=crate::ast::module_name(&program,symbol.unit); return normal(&program,&module,&field.typ);
+} } } } }
+fn is_arena(report:&Report,typ:&text)->bool {
+    let base=crate::ast::base(&typ); if !contains_key(report.symbols,base) { return false; }
+    borrow symbol=get(report.symbols,base) { return symbol.kind==25; }
+}
+fn result_payload(program:&crate::ast::Program,report:&Report,typ:&text,which:int)->text {
+    if text_eq(typ,"ReadResult") { return "text"; }
+    if text_eq(typ,"ProcessRun") { if which==0 { return "ProcessOutput"; } return "text"; }
+    if !contains_key(report.symbols,typ) { return "?"; }
+    let symbol=clone_get(report.symbols,typ); borrow ast_unit_9=at(program.units,symbol.unit) { borrow declaration=at(ast_unit_9.tree.nodes,symbol.node) {
+    if declaration.kind!=3 || len(declaration.children)!=2 { return "?"; }
+    borrow ast_unit_10=at(program.units,symbol.unit) { borrow field=at(ast_unit_10.tree.nodes,at(declaration.children,which)) { let module=crate::ast::module_name(&program,symbol.unit);
+    return normal(&program,&module,&field.typ);
+} } } } }
+fn is_map(report:&Report,typ:&text)->bool {
+    let base=crate::ast::base(&typ); if !contains_key(report.symbols,base) { return false; }
+    borrow symbol=get(report.symbols,base) { return symbol.kind==5; }
+}
+fn is_vector(report:&Report,typ:&text)->bool {
+    let base=crate::ast::collection(&typ); if !contains_key(report.symbols,base) { return false; }
+    borrow symbol=get(report.symbols,base) { return symbol.kind==4; }
+}
+fn is_soa(program:&crate::ast::Program,report:&Report,typ:&text)->bool {
+    let base=crate::ast::collection(&typ); if !contains_key(report.symbols,base) { return false; }
+    let symbol=clone_get(report.symbols,base); borrow ast_unit_11=at(program.units,symbol.unit) { borrow node=at(ast_unit_11.tree.nodes,symbol.node) { return symbol.kind==4 && node.flag>=2;
+} } }
+fn place(program:&crate::ast::Program,unit:int,index:int,depth:int)->text {
+    if depth>96 || index<0 { return ""; }
+    borrow ast_unit_12=at(program.units,unit) { borrow node=at(ast_unit_12.tree.nodes,index) {
+    if node.kind==30 { return clone(node.name); }
+    if node.kind==38 && text_starts_with(node.name,"&") { return place(&program,unit,at(node.children,0),depth+1); }
+    if node.kind==36 {
+        let root=place(&program,unit,at(node.children,0),depth+1);
+        if len(root)>0 { return concat(root,concat(".",node.name)); }
+    }
+    return "";
+} } }
+fn root_name(path:&text)->text {
+    for i in 0..len(path) { if byte_at(path,i)==46 { return slice(path,0,i); } }
+    return clone(path);
+}
+fn place_type(program:&crate::ast::Program,report:&Report,state:&State,unit:int,index:int,depth:int)->text {
+    if depth>96 { return "?"; }
+    borrow ast_unit_13=at(program.units,unit) { borrow node=at(ast_unit_13.tree.nodes,index) {
+    if node.kind==30 {
+        if !contains_key(state.locals,node.name) { return "?"; }
+        borrow local=get(state.locals,node.name) { return crate::ast::base(&local.typ); }
+    }
+    if node.kind==36 {
+        let owner=place_type(&program,&report,&state,unit,at(node.children,0),depth+1);
+        return member(&program,&report,&owner,&node.name);
+    }
+    return "?";
+} } }
+fn overlaps(left:&text,right:&text)->bool {
+    return text_eq(left,right) || text_starts_with(left,concat(right,".")) || text_starts_with(right,concat(left,"."));
+}
+fn check_live(program:&crate::ast::Program,report:&mut Report,state:&State,unit:int,index:int,path:&text,consuming:bool) {
+    for i in 0..len(state.moved_names) {
+        let moved=text_at(state.moved_names,i);
+        if contains_key(state.dead,moved) && overlaps(&moved,&path) {
+            diagnostic(&program,&mut report,unit,index,concat("use after move: ",path)); return;
+        }
+    }
+    for loan in &state.loans {
+        if overlaps(&loan.path,&path) && (loan.exclusive || consuming) {
+            diagnostic(&program,&mut report,unit,index,concat("owner accessed while scoped loan is active: ",path)); return;
+        }
+    }
+}
+fn consume_place(program:&crate::ast::Program,report:&mut Report,state:&mut State,unit:int,index:int,path:&text,typ:&text) {
+    if !crate::ast::owned(&typ) { return; }
+    let root=root_name(&path);
+    if contains_key(state.locals,root) {
+        let local=clone_get(state.locals,root);
+        if text_starts_with(local.typ,"&") {
+            diagnostic(&program,&mut report,unit,index,concat("cannot move borrowed owner: ",path)); return;
+        }
+    }
+    if !contains_key(state.dead,path) { insert(state.dead,clone(path),1); push(state.moved_names,clone(path)); report.moves=report.moves+1; }
+}
+fn restore(state:&mut State,path:&text) {
+    for i in 0..len(state.moved_names) {
+        let moved=text_at(state.moved_names,i);
+        if text_eq(moved,path) || text_starts_with(moved,concat(path,".")) { let removed=remove(state.dead,moved); }
+    }
+}
+fn mutable_place(program:&crate::ast::Program,report:&mut Report,state:&State,unit:int,index:int) {
+    borrow ast_unit_14=at(program.units,unit) { borrow expression=at(ast_unit_14.tree.nodes,index) {
+    if expression.kind==38 && text_eq(expression.name,"&") { diagnostic(&program,&mut report,unit,index,"mutation through shared borrow argument"); return; }
+    let path=place(&program,unit,index,0); let root=root_name(&path);
+    if len(path)==0 || !contains_key(state.locals,root) { diagnostic(&program,&mut report,unit,index,"mutation requires a named place"); return; }
+    let local=clone_get(state.locals,root);
+    for i in 0..len(state.moved_names) {
+        let moved=text_at(state.moved_names,i);
+        if contains_key(state.dead,moved) && text_starts_with(path,concat(moved,".")) {
+            diagnostic(&program,&mut report,unit,index,concat("mutation below moved owner: ",path)); return;
+        }
+    }
+    for loan in &state.loans {
+        if overlaps(&loan.path,&path) { diagnostic(&program,&mut report,unit,index,concat("mutation while scoped loan is active: ",path)); return; }
+    }
+    if text_starts_with(local.typ,"&") {
+        if !text_starts_with(local.typ,"&mut ") { diagnostic(&program,&mut report,unit,index,"mutation through shared borrow"); }
+    } else if !local.mutable { diagnostic(&program,&mut report,unit,index,concat("immutable binding: ",root)); }
+} } }
+fn bind(program:&crate::ast::Program,report:&mut Report,state:&mut State,unit:int,index:int,name:text,typ:text,mutable:bool) {
+    if contains_key(state.locals,name) { diagnostic(&program,&mut report,unit,index,concat("duplicate local ",name)); return; }
+    if contains_key(state.nonneg,name) { let cleared=remove(state.nonneg,name); }
+    if contains_key(state.lows,name) { let low=remove(state.lows,name); let high=remove(state.highs,name); }
+    push(state.names,clone(name)); insert(state.locals,name,Local{typ:typ,mutable:mutable});
+}
+fn same(program:&crate::ast::Program,report:&mut Report,unit:int,index:int,actual:&text,expected:&text) {
+    if (text_eq(actual,"int") && text_eq(expected,"i64")) || (text_eq(actual,"i64") && text_eq(expected,"int")) { return; }
+    if !text_eq(actual,expected) && !text_eq(actual,"?") && !text_eq(expected,"?") {
+        diagnostic(&program,&mut report,unit,index,concat("type mismatch: expected ",concat(expected,concat(", got ",actual))));
+    }
+}
+fn textlike(typ:&text)->bool { return text_eq(typ,"text") || text_eq(typ,"str"); }
+// Source remains seed-0.27 compatible: classify names without invoking them.
+pub fn integer_type(typ:&text)->bool { return text_eq(typ,"int") || text_eq(typ,"i64") || text_eq(typ,"i8") || text_eq(typ,"i16") || text_eq(typ,"i32") || text_eq(typ,"u8") || text_eq(typ,"u16") || text_eq(typ,"u32") || text_eq(typ,"u64"); }
+pub fn integer_intrinsic(name:&text)->int {
+    if text_eq(name,"wrapping_add") {return 0;} if text_eq(name,"wrapping_sub") {return 1;} if text_eq(name,"wrapping_mul") {return 2;}
+    if text_eq(name,"bit_and") {return 3;} if text_eq(name,"bit_or") {return 4;} if text_eq(name,"bit_xor") {return 5;} if text_eq(name,"bit_not") {return 6;}
+    if text_eq(name,"shl") {return 7;} if text_eq(name,"shr") {return 8;} if text_eq(name,"rotl") {return 9;} if text_eq(name,"rotr") {return 10;} return -1;
+}
+// v0.29 finite non-negativity proof for C lowering of int (i64) `%`/`/` by a
+// power-of-two literal. Sound because ordinary int `+`/`*` are checked (overflow
+// faults instead of wrapping), len/char_count/byte_at results are >= 0, a
+// positive-literal divisor keeps a non-negative dividend non-negative, and
+// facts for names come only from immutable bindings (see check_statement).
+// Anything else, including narrow types and field reads, stays unproven.
+@effect(no_alloc, no_io, bounded)
+pub fn decimal_literal(name:&text)->bool {
+    if len(name)==0 { return false; }
+    for i in 0..len(name) { let c=byte_at(name,i); if c<48 || c>57 { return false; } }
+    return true;
+}
+@effect(no_alloc, no_io, bounded)
+fn positive_literal(name:&text)->bool {
+    if !decimal_literal(&name) { return false; }
+    for i in 0..len(name) { if byte_at(name,i)!=48 { return true; } }
+    return false;
+}
+pub fn power_of_two_literal(program:&crate::ast::Program,unit:int,index:int)->int {
+    borrow ast_unit_42=at(program.units,unit) { borrow node=at(ast_unit_42.tree.nodes,index) {
+    if node.kind!=31 || !decimal_literal(&node.name) { return -1; }
+    let mut value=1;
+    for shift in 0..63 { if text_eq(int_text(value),node.name) { return shift; } if shift<62 { value=value*2; } }
+    return -1;
+} } }
+pub fn proven_nonnegative(program:&crate::ast::Program,report:&Report,unit:int,index:int,depth:int)->bool {
+    if depth>96 { return false; }
+    let key=crate::ast::node_key(unit,index);
+    if !contains_key(report.types,key) { return false; }
+    let typ=clone_get(report.types,key);
+    if !text_eq(typ,"int") && !text_eq(typ,"i64") { return false; }
+    borrow ast_unit_43=at(program.units,unit) { borrow node=at(ast_unit_43.tree.nodes,index) {
+    if node.kind==31 { return decimal_literal(&node.name); }
+    if node.kind==30 { return contains_key(report.nonnegative,key); }
+    if node.kind==39 {
+        if text_eq(node.name,"+") || text_eq(node.name,"*") { return proven_nonnegative(&program,&report,unit,at(node.children,0),depth+1) && proven_nonnegative(&program,&report,unit,at(node.children,1),depth+1); }
+        if text_eq(node.name,"%") || text_eq(node.name,"/") {
+            borrow ast_unit_44=at(program.units,unit) { borrow divisor=at(ast_unit_44.tree.nodes,at(node.children,1)) {
+            let positive=divisor.kind==31 && positive_literal(&divisor.name);
+            return positive && proven_nonnegative(&program,&report,unit,at(node.children,0),depth+1);
+            } }
+        }
+        return false;
+    }
+    if node.kind==35 {
+        borrow ast_unit_45=at(program.units,unit) { borrow callee=at(ast_unit_45.tree.nodes,at(node.children,0)) {
+        if callee.kind!=30 { return false; }
+        let module=crate::ast::module_name(&program,unit);let resolved=crate::ast::resolve(&program,&module,&callee.name);
+        if contains_key(report.symbols,resolved) { return false; }
+        return text_eq(callee.name,"len") || text_eq(callee.name,"char_count") || text_eq(callee.name,"byte_at");
+        } }
+    }
+    return false;
+} } }
+// v1.2 finite interval proof for int expressions, used only to lower a fixed
+// u8 array big-endian store without its bounds check. Sound for the same
+// reasons as proven_nonnegative: ordinary int +,-,* are checked (an overflow
+// faults before the value reaches a store), facts come only from immutable
+// bindings and range-loop cursors (never assigned), and every endpoint stays
+// within +/-2^31 so this computation itself cannot overflow. Anything else,
+// including field reads, calls, division and narrow types, is unproven ([]).
+pub fn proven_range(program:&crate::ast::Program,report:&Report,unit:int,index:int,depth:int)->ints {
+    if depth>96 { return []; }
+    let key=crate::ast::node_key(unit,index);
+    if !contains_key(report.types,key) { return []; }
+    let typ=clone_get(report.types,key);
+    if !text_eq(typ,"int") && !text_eq(typ,"i64") { return []; }
+    borrow ast_unit_46=at(program.units,unit) { borrow node=at(ast_unit_46.tree.nodes,index) {
+    if node.kind==31 {
+        if !decimal_literal(&node.name) || len(node.name)>10 { return []; }
+        let value=parse_int(node.name); if value>2147483648 { return []; }
+        return [value,value];
+    }
+    if node.kind==30 {
+        if contains_key(report.lows,key) && contains_key(report.highs,key) { let low=clone_get(report.lows,key); let high=clone_get(report.highs,key); return [low,high]; }
+        return [];
+    }
+    if node.kind==39 && (text_eq(node.name,"+") || text_eq(node.name,"-") || text_eq(node.name,"*")) {
+        let left=proven_range(&program,&report,unit,at(node.children,0),depth+1); let right=proven_range(&program,&report,unit,at(node.children,1),depth+1);
+        if len(left)!=2 || len(right)!=2 { return []; }
+        let a=at(left,0); let b=at(left,1); let c=at(right,0); let d=at(right,1);
+        let mut low=a+c; let mut high=b+d;
+        if text_eq(node.name,"-") { low=a-d; high=b-c; }
+        if text_eq(node.name,"*") {
+            low=a*c; high=a*c;
+            let corners=[a*d,b*c,b*d];
+            for i in 0..3 { let corner=at(corners,i); if corner<low { low=corner; } if corner>high { high=corner; } }
+        }
+        if low< -2147483648 || high>2147483648 { return []; }
+        return [low,high];
+    }
+    return [];
+} } }
+// v1.2 wire builtins: wire_ aliases canonicalize like the Rust checker.
+pub fn wire_name(name:&text)->text {
+    if text_starts_with(name,"wire_") {
+        let rest=slice(name,5,len(name));
+        if wire_width(&rest)>0 { return rest; }
+    }
+    return clone(name);
+}
+fn wire_read(name:&text)->bool { let canonical=wire_name(&name); return wire_width(&canonical)>0 && text_starts_with(canonical,"read_"); }
+pub fn wire_width(name:&text)->int {
+    if text_eq(name,"read_u16_be") || text_eq(name,"try_write_u16_be") { return 2; }
+    if text_eq(name,"read_u32_be") || text_eq(name,"try_write_u32_be") { return 4; }
+    if text_eq(name,"read_u64_be") || text_eq(name,"try_write_u64_be") { return 8; }
+    return 0;
+}
+// Effect bits of one checked builtin call, mirroring the Rust effects.rs
+// classification for the bootstrap subset (see README-v120.md).
+fn builtin_bits(name:&text,produced:&text)->int {
+    let canonical=wire_name(&name); let mut bits=0;
+    if text_eq(name,"args_count") || text_eq(name,"arg") || text_eq(name,"read_text") || text_eq(name,"try_read_text") || text_eq(name,"write_text") || text_eq(name,"process_run")
+        || text_eq(name,"env_var") || text_eq(name,"file_exists") || text_eq(name,"create_dir") || text_eq(name,"remove_file") || text_eq(name,"list_dir") || text_eq(name,"exit_code") { bits=2; }
+    if text_eq(name,"process_run") { bits=bit_or(bits,8); }
+    let quiet=text_eq(name,"len") || text_eq(name,"capacity") || text_eq(name,"at") || text_eq(name,"set") || text_eq(name,"replace") || text_eq(name,"swap")
+        || text_eq(name,"byte_at") || text_eq(name,"codepoint_at") || text_eq(name,"next_char_boundary") || text_eq(name,"is_char_boundary") || text_eq(name,"char_count")
+        || text_eq(name,"text_eq") || text_eq(name,"contains") || text_eq(name,"text_starts_with") || text_eq(name,"text_ends_with") || text_eq(name,"is_int") || text_eq(name,"parse_int")
+        || text_eq(name,"contains_key") || text_eq(name,"remove") || text_eq(name,"contains_id") || text_eq(name,"free") || text_eq(name,"args_count")
+        || text_eq(name,"get") || text_eq(name,"region") || text_eq(name,"at_pair") || text_eq(name,"ints") || text_eq(name,"texts")
+        || text_eq(name,"file_exists") || text_eq(name,"create_dir") || text_eq(name,"remove_file") || text_eq(name,"exit_code")
+        || text_eq(name,"text_find")
+        || integer_intrinsic(&name)>=0 || numeric(&name) || wire_width(&canonical)>0
+        || (text_eq(name,"clone") && crate::ast::is_fixed(&produced))
+        || ((text_eq(name,"clone_at") || text_eq(name,"clone_get")) && !crate::ast::owned(&produced));
+    if !quiet { bits=bit_or(bits,1); }
+    return bits;
+}
+fn numeric(typ:&text)->bool { return crate::ast::primitive(&typ) && !textlike(&typ) && !text_eq(typ,"ints") && !text_eq(typ,"texts") && !text_eq(typ,"bool") && !text_eq(typ,"unit"); }
+// A deliberately finite owner-preserving expression proof used by C lowering.
+// User calls (including builtin-name shadows), moves and mutation are excluded.
+pub fn read_only_expression(program:&crate::ast::Program,report:&Report,unit:int,index:int,depth:int)->bool {
+    if depth>96 { return false; }
+    borrow ast_unit_15=at(program.units,unit) { borrow node=at(ast_unit_15.tree.nodes,index) {
+    if node.kind==30 || node.kind==31 || node.kind==32 || node.kind==33 || node.kind==34 { return true; }
+    if node.kind==36 || node.kind==38 || node.kind==39 {
+        if node.kind==38 && text_eq(node.name,"&mut") { return false; }
+        for i in 0..len(node.children) { if !read_only_expression(&program,&report,unit,at(node.children,i),depth+1) { return false; } }
+        return true;
+    }
+    if node.kind!=35 { return false; }
+    borrow ast_unit_16=at(program.units,unit) { borrow callee=at(ast_unit_16.tree.nodes,at(node.children,0)) {if callee.kind!=30 { return false; }
+    let module=crate::ast::module_name(&program,unit);let key=crate::ast::resolve(&program,&module,&callee.name);
+    if contains_key(report.symbols,key) { return false; }
+    let name=clone(callee.name);
+    let supported=text_eq(name,"clone") || text_eq(name,"len") || text_eq(name,"capacity") || text_eq(name,"at") || text_eq(name,"clone_at") || text_eq(name,"clone_get") || text_eq(name,"contains_key") || text_eq(name,"contains_id") || text_eq(name,"text_at")
+        || text_eq(name,"byte_at") || text_eq(name,"char_count") || text_eq(name,"codepoint_at") || text_eq(name,"next_char_boundary") || text_eq(name,"is_char_boundary")
+        || text_eq(name,"text_eq") || text_eq(name,"contains") || text_eq(name,"text_starts_with") || text_eq(name,"text_ends_with")
+        || text_eq(name,"concat") || text_eq(name,"slice") || text_eq(name,"text_trim") || text_eq(name,"text_find") || text_eq(name,"text_replace") || text_eq(name,"codepoint_text") || text_eq(name,"to_text") || text_eq(name,"text_lines") || text_eq(name,"split") || text_eq(name,"text_join")
+        || integer_intrinsic(&name)>=0 || text_eq(name,"is_int") || text_eq(name,"parse_int") || text_eq(name,"is_f64") || text_eq(name,"parse_f64") || text_eq(name,"int_text") || numeric(&name) || wire_read(&name);
+    if !supported { return false; }
+    for i in 1..len(node.children) { if !read_only_expression(&program,&report,unit,at(node.children,i),depth+1) { return false; } }
+    return true;
+} } } } }
+fn arg_type(types:&texts,index:int)->text { if index>=len(types) { return "?"; } return text_at(types,index); }
+fn expect_arg(program:&crate::ast::Program,report:&mut Report,unit:int,index:int,types:&texts,argument:int,expected:text) {
+    let actual=arg_type(&types,argument);
+    if text_eq(expected,"textlike") {
+        if !textlike(&actual) && !text_eq(actual,"?") { diagnostic(&program,&mut report,unit,index,"text argument required"); }
+    } else { same(&program,&mut report,unit,index,&actual,&expected); }
+}
+fn builtin(program:&crate::ast::Program,report:&mut Report,state:&mut State,unit:int,index:int,name:&text,args:&ints,depth:int)->text {
+    let mut count=-1; let mut result_type="?";
+    if integer_intrinsic(&name)>=0 { count=2; if integer_intrinsic(&name)==6 {count=1;} }
+    else if text_eq(name,"args_count") { count=0; result_type="int"; }
+    else if text_eq(name,"arg") || text_eq(name,"int_text") { count=1; result_type="text"; }
+    else if text_eq(name,"len") || text_eq(name,"capacity") || text_eq(name,"char_count") { count=1; result_type="int"; }
+    else if text_eq(name,"byte_at") || text_eq(name,"codepoint_at") || text_eq(name,"next_char_boundary") { count=2; result_type="int"; }
+    else if text_eq(name,"is_char_boundary") { count=2; result_type="bool"; }
+    else if text_eq(name,"text_eq") || text_eq(name,"contains") || text_eq(name,"text_starts_with") || text_eq(name,"text_ends_with") { count=2; result_type="bool"; }
+    else if text_eq(name,"is_int") || text_eq(name,"is_f64") { count=1; result_type="bool"; }
+    else if text_eq(name,"parse_int") { count=1; result_type="int"; }
+    else if text_eq(name,"parse_f64") { count=1; result_type="f64"; }
+    else if text_eq(name,"slice") { count=3; result_type="text"; }
+    else if text_eq(name,"concat") { count=len(args); result_type="text"; if count<2 || count>16 { diagnostic(&program,&mut report,unit,index,"concat expects 2 to 16 arguments"); } }
+    else if text_eq(name,"text_join") { count=2; result_type="text"; }
+    else if text_eq(name,"keys") { count=1; }
+    else if text_eq(name,"text_at") { count=2; result_type="text"; }
+    else if text_eq(name,"text_lines") || text_eq(name,"split") { count=1; result_type="texts"; if text_eq(name,"split") { count=2; } }
+    else if text_eq(name,"text_trim") || text_eq(name,"to_text") || text_eq(name,"read_text") { count=1; result_type="text"; }
+    else if text_eq(name,"try_read_text") { count=1; result_type="ReadResult"; }
+    else if text_eq(name,"write_text") { count=2; result_type="unit"; }
+    else if text_eq(name,"clone") || text_eq(name,"pop") { count=1; }
+    else if text_eq(name,"at") || text_eq(name,"clone_at") || text_eq(name,"get") || text_eq(name,"clone_get") { count=2; }
+    else if text_eq(name,"at_pair") || text_eq(name,"swap") { count=3; result_type="unit"; }
+    else if text_eq(name,"push") { count=2; result_type="unit"; }
+    else if text_eq(name,"set") || text_eq(name,"replace") || text_eq(name,"insert") { count=3; result_type="unit"; }
+    else if text_eq(name,"alloc") { count=2; }
+    else if text_eq(name,"free") || text_eq(name,"contains_id") { count=2; result_type="bool"; }
+    else if text_eq(name,"contains_key") || text_eq(name,"remove") { count=2; result_type="bool"; }
+    else if text_eq(name,"region") { count=3; result_type="&str"; }
+    else if text_eq(name,"codepoint_text") { count=1; result_type="text"; }
+    else if text_eq(name,"text_find") { count=3; result_type="int"; }
+    else if text_eq(name,"text_replace") { count=3; result_type="text"; }
+    else if text_eq(name,"env_var") { count=1; result_type="text"; }
+    else if text_eq(name,"file_exists") || text_eq(name,"create_dir") || text_eq(name,"remove_file") { count=1; result_type="bool"; }
+    else if text_eq(name,"list_dir") { count=1; result_type="texts"; }
+    else if text_eq(name,"exit_code") { count=1; result_type="unit"; }
+    else if text_eq(name,"ints") || text_eq(name,"texts") { count=0; result_type=clone(name); }
+    else if numeric(&name) { count=1; result_type=clone(name); }
+    let canonical=wire_name(&name); let width=wire_width(&canonical);
+    if count<0 && width>0 { if text_starts_with(canonical,"try_write_") { count=3; result_type="bool"; } else { count=2; result_type=concat("u",int_text(width*8)); } }
+    if count<0 && text_eq(name,"process_run") { count=2; result_type="ProcessRun"; }
+    if count<0 { diagnostic(&program,&mut report,unit,index,concat("unknown function ",name)); return "?"; }
+    if len(args)!=count { diagnostic(&program,&mut report,unit,index,concat("argument count for ",name)); }
+    let mut types=texts(); let mut reserved=false;
+    for i in 0..len(args) {
+        let consuming=((text_eq(name,"push") || text_eq(name,"alloc")) && i==1) || (text_eq(name,"insert") && i>0) || (text_eq(name,"replace") && i==2);
+        let typ=infer(&program,&mut report,&mut state,unit,at(args,i),consuming,depth+1); push(types,typ);
+        if i==0 && state.aliasing && (text_eq(name,"at") || text_eq(name,"get") || text_eq(name,"at_pair") || text_eq(name,"region")) { let source=place(&program,unit,at(args,0),0); push(state.loans,Loan{path:source,exclusive:false}); reserved=true; }
+    }
+    if reserved { let released=pop(state.loans); }
+    let raw_first=arg_type(&types,0);let first=crate::ast::base(&raw_first); let second=arg_type(&types,1);
+    if integer_intrinsic(&name)>=0 {
+        if !integer_type(&raw_first) && !text_eq(raw_first,"?") { diagnostic(&program,&mut report,unit,index,"integer intrinsic requires integer operands"); }
+        if integer_intrinsic(&name)>=7 { expect_arg(&program,&mut report,unit,index,&types,1,"int"); }
+        else if integer_intrinsic(&name)!=6 { same(&program,&mut report,unit,index,&second,&raw_first); }
+        return raw_first;
+    }
+    // v1.2 big-endian wire access (contract N2): a fixed [u8;N] buffer, an int
+    // offset and, for try_write, the exact unsigned value width; writes need a
+    // mutable live owner (or &mut parameter) exactly like set.
+    if width>0 {
+        let element=crate::ast::fixed_element(&first);
+        if !text_eq(raw_first,"?") && (!crate::ast::is_fixed(&first) || !text_eq(element,"u8")) { diagnostic(&program,&mut report,unit,index,"wire access requires a fixed [u8;N] array"); }
+        expect_arg(&program,&mut report,unit,index,&types,1,"int");
+        if text_starts_with(canonical,"try_write_") {
+            let value=concat("u",int_text(width*8)); expect_arg(&program,&mut report,unit,index,&types,2,value);
+            if len(args)>0 { mutable_place(&program,&mut report,&state,unit,at(args,0)); }
+        }
+        return result_type;
+    }
+    if text_eq(name,"process_run") {
+        expect_arg(&program,&mut report,unit,index,&types,0,"textlike"); let argv=arg_type(&types,1);
+        if !text_eq(argv,"&texts") && !text_eq(argv,"?") { diagnostic(&program,&mut report,unit,index,"process_run argv requires a shared borrowed texts collection"); }
+        return result_type;
+    }
+    if crate::ast::is_fixed(&first) && (text_eq(name,"push") || text_eq(name,"pop") || text_eq(name,"replace") || text_eq(name,"swap") || text_eq(name,"at_pair") || text_eq(name,"clone_at") || text_eq(name,"region")
+        || text_eq(name,"get") || text_eq(name,"clone_get") || text_eq(name,"insert") || text_eq(name,"remove") || text_eq(name,"contains_key")) {
+        diagnostic(&program,&mut report,unit,index,"fixed arrays support len, at, set, clone and wire reads/writes"); return "?";
+    }
+    if numeric(&name) && !numeric(&first) && !text_eq(first,"?") { diagnostic(&program,&mut report,unit,index,"numeric conversion requires numeric scalar"); }
+    if text_eq(name,"clone") {
+        let base=crate::ast::base(&first);
+        if crate::ast::is_span(&base) { diagnostic(&program,&mut report,unit,index,"cannot clone scoped vector span"); }
+        if text_eq(first,"str") { diagnostic(&program,&mut report,unit,index,"str requires to_text rather than clone"); }
+        return first;
+    }
+    if (text_eq(name,"get") || text_eq(name,"region") || text_eq(name,"at_pair")) && !state.aliasing { diagnostic(&program,&mut report,unit,index,"get/region is available only in a scoped borrow"); }
+    if text_eq(name,"arg") || text_eq(name,"int_text") || text_eq(name,"exit_code") || text_eq(name,"codepoint_text") { expect_arg(&program,&mut report,unit,index,&types,0,"int"); }
+    if text_eq(name,"len") || text_eq(name,"capacity") {
+        let elem=element(&program,&report,&first,0);
+        if !textlike(&first) && text_eq(elem,"?") { diagnostic(&program,&mut report,unit,index,"len/capacity requires text or collection"); }
+        if text_eq(name,"capacity") && crate::ast::is_span(&first) { diagnostic(&program,&mut report,unit,index,"capacity is unavailable on scoped vector span"); }
+        if text_eq(name,"capacity") && !is_arena(&report,&first) && !is_vector(&report,&first) && !text_eq(first,"ints") && !text_eq(first,"texts") { diagnostic(&program,&mut report,unit,index,"capacity requires a vector/array"); }
+    }
+    if text_eq(name,"byte_at") || text_eq(name,"codepoint_at") || text_eq(name,"next_char_boundary") || text_eq(name,"is_char_boundary") {
+        expect_arg(&program,&mut report,unit,index,&types,0,"textlike"); expect_arg(&program,&mut report,unit,index,&types,1,"int");
+    }
+    if text_eq(name,"is_int") || text_eq(name,"is_f64") || text_eq(name,"parse_int") || text_eq(name,"parse_f64")
+        || text_eq(name,"text_trim") || text_eq(name,"text_lines") || text_eq(name,"char_count") || text_eq(name,"to_text")
+        || text_eq(name,"env_var") || text_eq(name,"file_exists") || text_eq(name,"create_dir") || text_eq(name,"remove_file") || text_eq(name,"list_dir") {
+        expect_arg(&program,&mut report,unit,index,&types,0,"textlike");
+    }
+    if text_eq(name,"text_eq") || text_eq(name,"contains") || text_eq(name,"text_starts_with") || text_eq(name,"text_ends_with")
+        || text_eq(name,"concat") || text_eq(name,"split") {
+        expect_arg(&program,&mut report,unit,index,&types,0,"textlike"); expect_arg(&program,&mut report,unit,index,&types,1,"textlike");
+        if text_eq(name,"concat") { for i in 2..len(args) { expect_arg(&program,&mut report,unit,index,&types,i,"textlike"); } }
+    }
+    if text_eq(name,"text_find") || text_eq(name,"text_replace") {
+        expect_arg(&program,&mut report,unit,index,&types,0,"textlike"); expect_arg(&program,&mut report,unit,index,&types,1,"textlike");
+        if text_eq(name,"text_find") { expect_arg(&program,&mut report,unit,index,&types,2,"int"); } else { expect_arg(&program,&mut report,unit,index,&types,2,"textlike"); }
+    }
+    // v1.4 keys(m): a fresh texts/ints copy of a text- or int-keyed map's keys;
+    // the map is only read, exactly like contains_key.
+    if text_eq(name,"keys") {
+        let key_type=element(&program,&report,&first,0);
+        if text_eq(raw_first,"?") { return "?"; }
+        if is_map(&report,&first) && text_eq(key_type,"text") { return "texts"; }
+        if is_map(&report,&first) && (text_eq(key_type,"int") || text_eq(key_type,"i64")) { return "ints"; }
+        diagnostic(&program,&mut report,unit,index,"keys requires a map with text or int keys"); return "?";
+    }
+    if text_eq(name,"read_text") || text_eq(name,"try_read_text") { expect_arg(&program,&mut report,unit,index,&types,0,"text"); }
+    if text_eq(name,"write_text") { expect_arg(&program,&mut report,unit,index,&types,0,"text");expect_arg(&program,&mut report,unit,index,&types,1,"text"); }
+    if text_eq(name,"text_join") { expect_arg(&program,&mut report,unit,index,&types,0,"texts"); expect_arg(&program,&mut report,unit,index,&types,1,"textlike"); }
+    if text_eq(name,"text_at") { expect_arg(&program,&mut report,unit,index,&types,0,"texts"); expect_arg(&program,&mut report,unit,index,&types,1,"int"); }
+    if text_eq(name,"slice") || text_eq(name,"region") {
+        expect_arg(&program,&mut report,unit,index,&types,1,"int"); expect_arg(&program,&mut report,unit,index,&types,2,"int");
+        if text_eq(name,"region") && (is_vector(&report,&first) || crate::ast::is_span(&first) || text_eq(first,"ints")) {
+            if is_soa(&program,&report,&first) { diagnostic(&program,&mut report,unit,index,"SoA rows are noncontiguous; region requires contiguous nominal vector"); }
+            let owner=crate::ast::collection(&first); return concat("[",concat(owner,"]"));
+        }
+        expect_arg(&program,&mut report,unit,index,&types,0,"textlike");
+    }
+    let arena_operation=text_eq(name,"alloc") || text_eq(name,"free") || text_eq(name,"contains_id") || ((text_eq(name,"get") || text_eq(name,"clone_get")) && is_arena(&report,&first));
+    if arena_operation {
+        if !is_arena(&report,&first) { diagnostic(&program,&mut report,unit,index,"arena operation requires nominal arena"); return "?"; }
+        let elem=element(&program,&report,&first,0); let handle=concat("id(",concat(first,")"));
+        if text_eq(name,"alloc") { same(&program,&mut report,unit,index,&second,&elem); }
+        else { same(&program,&mut report,unit,index,&second,&handle); }
+        if text_eq(name,"alloc") || text_eq(name,"free") { if len(args)>0 { mutable_place(&program,&mut report,&state,unit,at(args,0)); } }
+        if text_eq(name,"alloc") { return handle; }
+        if text_eq(name,"get") || text_eq(name,"clone_get") { return elem; }
+        return "bool";
+    }
+    let map_operation=text_eq(name,"contains_key") || text_eq(name,"insert") || text_eq(name,"remove") || text_eq(name,"clone_get") || text_eq(name,"get");
+    let vector_operation=text_eq(name,"at_pair") || text_eq(name,"swap") || text_eq(name,"at") || text_eq(name,"clone_at") || text_eq(name,"push") || text_eq(name,"pop") || text_eq(name,"replace") || text_eq(name,"set");
+    if map_operation || vector_operation {
+        let mut elem=element(&program,&report,&first,0);
+        if map_operation {
+            if !is_map(&report,&first) { diagnostic(&program,&mut report,unit,index,"map operation requires nominal map"); }
+            same(&program,&mut report,unit,index,&second,&elem); elem=element(&program,&report,&first,1);
+        } else {
+            if is_map(&report,&first) || is_arena(&report,&first) || text_eq(elem,"?") { diagnostic(&program,&mut report,unit,index,"vector operation requires vector/array"); }
+            if !text_eq(name,"push") && !text_eq(name,"pop") { expect_arg(&program,&mut report,unit,index,&types,1,"int"); }
+        }
+        if (text_eq(name,"push") || text_eq(name,"pop")) && crate::ast::is_span(&first) { diagnostic(&program,&mut report,unit,index,"cannot resize scoped vector span"); }
+        if text_eq(name,"at_pair") || text_eq(name,"swap") { expect_arg(&program,&mut report,unit,index,&types,2,"int"); }
+        if text_eq(name,"at_pair") { return elem; }
+        if text_eq(name,"push") { same(&program,&mut report,unit,index,&second,&elem); }
+        if text_eq(name,"insert") || text_eq(name,"replace") || text_eq(name,"set") { let third=arg_type(&types,2); same(&program,&mut report,unit,index,&third,&elem); }
+        if text_eq(name,"push") || text_eq(name,"insert") || text_eq(name,"remove") || text_eq(name,"replace") || text_eq(name,"set") || text_eq(name,"pop") || text_eq(name,"swap") {
+            if len(args)>0 { mutable_place(&program,&mut report,&state,unit,at(args,0)); }
+        }
+        if text_eq(name,"at") || text_eq(name,"get") {
+            if !state.aliasing && crate::ast::owned(&elem) { diagnostic(&program,&mut report,unit,index,"owned element access requires scoped borrow or explicit clone"); }
+            return elem;
+        }
+        if text_eq(name,"clone_at") || text_eq(name,"clone_get") || text_eq(name,"pop") { return elem; }
+    }
+    return result_type;
+}
+fn user_call(program:&crate::ast::Program,report:&mut Report,state:&mut State,unit:int,index:int,symbol:&Symbol,args:&ints,receiver:int,depth:int)->text {
+    borrow ast_unit_17=at(program.units,symbol.unit) { borrow declaration=at(ast_unit_17.tree.nodes,symbol.node) { let module=crate::ast::module_name(&program,symbol.unit);
+    let count=len(declaration.children)-1; let mut supplied=len(args); if receiver>=0 { supplied=supplied+1; }
+    if count!=supplied { diagnostic(&program,&mut report,unit,index,"function argument count mismatch"); }
+    let called_module=crate::ast::module_name(&program,unit);
+    if !text_eq(module,called_module) && declaration.flag!=1 { diagnostic(&program,&mut report,unit,index,"private function is not visible across modules"); }
+    for i in 0..supplied {
+        let mut argument=-1;
+        if receiver>=0 && i==0 { argument=receiver; }
+        else { let mut at=i; if receiver>=0 { at=i-1; } argument=at(args,at); }
+        let mut expected="?";
+        if i<count { borrow ast_unit_18=at(program.units,symbol.unit) { borrow parameter=at(ast_unit_18.tree.nodes,at(declaration.children,i)) { expected=normal(&program,&module,&parameter.typ); } } }
+        let consuming=!text_starts_with(expected,"&");
+        let mut actual=infer(&program,&mut report,&mut state,unit,argument,consuming,depth+1);
+        if receiver>=0 && i==0 && text_starts_with(expected,"&") {
+            if text_starts_with(expected,"&mut ") { mutable_place(&program,&mut report,&state,unit,argument); actual=concat("&mut ",actual); }
+            else { actual=concat("&",actual); }
+        }
+        same(&program,&mut report,unit,argument,&actual,&expected);
+    }
+    report.resolved=report.resolved+1; return normal(&program,&module,&declaration.typ);
+} } }
+fn call(program:&crate::ast::Program,report:&mut Report,state:&mut State,unit:int,index:int,node:&crate::ast::Node,depth:int)->text {
+    borrow ast_unit_19=at(program.units,unit) { borrow callee=at(ast_unit_19.tree.nodes,at(node.children,0)) { let mut args=[];
+    for i in 1..len(node.children) { push(args,at(node.children,i)); }
+    let module=crate::ast::module_name(&program,unit); let mut name=clone(callee.name); let mut receiver=-1;
+    if callee.kind==36 {
+        receiver=at(callee.children,0); let owner=place_type(&program,&report,&state,unit,receiver,0);
+        name=crate::ast::key(&owner,&callee.name);
+    } else if callee.kind!=30 { diagnostic(&program,&mut report,unit,index,"callee must be a named function or method"); return "?"; }
+    let key=crate::ast::resolve(&program,&module,&name);
+    if contains_key(report.symbols,key) {
+        let symbol=clone_get(report.symbols,key);
+        if symbol.kind==6 { note_call(&mut report,&key); return user_call(&program,&mut report,&mut state,unit,index,&symbol,&args,receiver,depth); }
+        if symbol.kind==4 || symbol.kind==5 || symbol.kind==25 {
+            if len(args)!=0 { diagnostic(&program,&mut report,unit,index,"empty collection constructor takes no arguments"); }
+            return key;
+        }
+        if symbol.kind==9 {
+            borrow ast_unit_20=at(program.units,symbol.unit) { borrow variant=at(ast_unit_20.tree.nodes,symbol.node) { let origin=crate::ast::module_name(&program,symbol.unit);
+            let expected=normal(&program,&origin,&variant.typ); let mut count=1; if text_eq(expected,"unit") { count=0; }
+            if len(args)!=count { diagnostic(&program,&mut report,unit,index,"enum payload argument count"); }
+            for i in 0..len(args) { let actual=infer(&program,&mut report,&mut state,unit,at(args,i),true,depth+1); same(&program,&mut report,unit,index,&actual,&expected); }
+            return clone(symbol.typ);
+        } } }
+        diagnostic(&program,&mut report,unit,index,"record requires named field construction"); return "?";
+    }
+    if receiver>=0 || contains(name,"::") { diagnostic(&program,&mut report,unit,index,concat("unknown function/method ",name)); return "?"; }
+    let produced=builtin(&program,&mut report,&mut state,unit,index,&name,&args,depth);
+    note_effect(&mut report,builtin_bits(&name,&produced)); return produced;
+} } }
+fn infer_value(program:&crate::ast::Program,report:&mut Report,state:&mut State,unit:int,index:int,consuming:bool,depth:int)->text {
+    if depth>96 { diagnostic(&program,&mut report,unit,index,"expression checking exceeds 96"); return "?"; }
+    borrow ast_unit_21=at(program.units,unit) { borrow node=at(ast_unit_21.tree.nodes,index) {
+    if node.kind==31 { return "int"; }
+    if node.kind==32 { note_effect(&mut report,1); return "text"; }
+    if node.kind==33 { return "bool"; }
+    if node.kind==34 { return "f64"; }
+    if node.kind==30 || node.kind==36 {
+        let path=place(&program,unit,index,0); let typ=place_type(&program,&report,&state,unit,index,0);
+        if text_eq(typ,"?") { diagnostic(&program,&mut report,unit,index,concat("unknown name/field ",path)); return typ; }
+        if consuming && crate::ast::is_span(&typ) { diagnostic(&program,&mut report,unit,index,"cannot move scoped vector span"); }
+        check_live(&program,&mut report,&state,unit,index,&path,consuming && crate::ast::owned(&typ));
+        if consuming { consume_place(&program,&mut report,&mut state,unit,index,&path,&typ); }
+        if node.kind==30 && contains_key(state.nonneg,node.name) { let key=crate::ast::node_key(unit,index); if !contains_key(report.nonnegative,key) { insert(report.nonnegative,key,1); } }
+        if node.kind==30 && contains_key(state.lows,node.name) {
+            let low=clone_get(state.lows,node.name); let high=clone_get(state.highs,node.name);
+            insert(report.lows,crate::ast::node_key(unit,index),low); insert(report.highs,crate::ast::node_key(unit,index),high);
+        }
+        report.resolved=report.resolved+1; return typ;
+    }
+    if node.kind==35 { return call(&program,&mut report,&mut state,unit,index,&node,depth); }
+    if node.kind==43 {
+        let source=infer(&program,&mut report,&mut state,unit,at(node.children,0),true,depth+1);
+        let success=result_payload(&program,&report,&source,0); let failure=result_payload(&program,&report,&source,1);
+        let target=result_payload(&program,&report,&state.return_type,1);
+        if text_eq(success,"?") || text_eq(failure,"?") { diagnostic(&program,&mut report,unit,index,"try requires an owned two-variant result enum"); }
+        if text_eq(target,"?") { diagnostic(&program,&mut report,unit,index,"try requires a two-variant enclosing return enum"); }
+        same(&program,&mut report,unit,index,&failure,&target); return success;
+    }
+    if node.kind==38 {
+        let child=at(node.children,0); let value=infer(&program,&mut report,&mut state,unit,child,false,depth+1);
+        if text_eq(node.name,"&") { return concat("&",value); }
+        if text_eq(node.name,"&mut") { mutable_place(&program,&mut report,&state,unit,child); return concat("&mut ",value); }
+        let mut expected="int"; if text_eq(node.name,"!") { expected="bool"; }
+        same(&program,&mut report,unit,index,&value,&expected); return value;
+    }
+    if node.kind==39 {
+        let left=infer(&program,&mut report,&mut state,unit,at(node.children,0),false,depth+1);
+        let right=infer(&program,&mut report,&mut state,unit,at(node.children,1),false,depth+1);
+        same(&program,&mut report,unit,index,&right,&left);
+        if crate::ast::is_span(&left) { diagnostic(&program,&mut report,unit,index,"scoped vector spans have no scalar operators"); }
+        if text_eq(node.name,"&&") || text_eq(node.name,"||") {
+            let expected="bool"; same(&program,&mut report,unit,index,&left,&expected); return "bool";
+        }
+        if text_eq(node.name,"..") { let expected="int"; same(&program,&mut report,unit,index,&left,&expected); return "range"; }
+        if text_eq(node.name,"==") || text_eq(node.name,"!=") {
+            if crate::ast::owned(&left) { diagnostic(&program,&mut report,unit,index,"owned equality requires text_eq or explicit fields"); } return "bool";
+        }
+        if !crate::ast::primitive(&left) || textlike(&left) || text_eq(left,"bool") { diagnostic(&program,&mut report,unit,index,"numeric operator requires scalar numbers"); }
+        if text_eq(node.name,"<") || text_eq(node.name,"<=") || text_eq(node.name,">") || text_eq(node.name,">=") { return "bool"; }
+        return left;
+    }
+    if node.kind==44 {
+        let value=infer(&program,&mut report,&mut state,unit,at(node.children,0),true,depth+1);
+        let mut element=clone(value); if text_eq(element,"i64") { element="int"; }
+        let count=parse_int(node.name);
+        if !text_eq(value,"?") { let problem=fixed_problem(&element,count); if len(problem)>0 { diagnostic(&program,&mut report,unit,index,problem); } }
+        return concat("[",concat(element,concat(";",concat(int_text(count),"]"))));
+    }
+    if node.kind==42 {
+        if len(node.children)>0 { note_effect(&mut report,1); }
+        let mut element_type="int";
+        for i in 0..len(node.children) {
+            let actual=infer(&program,&mut report,&mut state,unit,at(node.children,i),true,depth+1);
+            if i==0 { element_type=clone(actual); } same(&program,&mut report,unit,index,&actual,&element_type);
+        }
+        if text_eq(element_type,"text") { return "texts"; }
+        if !text_eq(element_type,"int") { diagnostic(&program,&mut report,unit,index,"array literal supports int or text elements"); }
+        return "ints";
+    }
+    if node.kind==40 {
+        let module=crate::ast::module_name(&program,unit); let key=crate::ast::resolve(&program,&module,&node.name);
+        if !contains_key(report.symbols,key) { diagnostic(&program,&mut report,unit,index,concat("unknown record ",key)); return "?"; }
+        let symbol=clone_get(report.symbols,key); borrow ast_unit_22=at(program.units,symbol.unit) { borrow declaration=at(ast_unit_22.tree.nodes,symbol.node) { let mut seen=Marks();
+        if declaration.kind!=2 { diagnostic(&program,&mut report,unit,index,"named fields require a struct"); }
+        for i in 0..len(node.children) {
+            borrow ast_unit_23=at(program.units,unit) { borrow field=at(ast_unit_23.tree.nodes,at(node.children,i)) { let expected=member(&program,&report,&key,&field.name);
+            if contains_key(seen,field.name) { diagnostic(&program,&mut report,unit,index,"duplicate record initializer field"); }
+            insert(seen,clone(field.name),1);
+            if text_eq(expected,"?") { let message=concat("unknown record field ",field.name);diagnostic(&program,&mut report,unit,index,message); }
+            let actual=infer(&program,&mut report,&mut state,unit,at(field.children,0),true,depth+1); same(&program,&mut report,unit,index,&actual,&expected);
+        } } }
+        if len(seen)!=len(declaration.children) { diagnostic(&program,&mut report,unit,index,"record initializer must supply every field"); }
+        return key;
+    } } }
+    diagnostic(&program,&mut report,unit,index,"unsupported expression node"); return "?";
+} } }
+fn infer(program:&crate::ast::Program,report:&mut Report,state:&mut State,unit:int,index:int,consuming:bool,depth:int)->text {
+    let typ=infer_value(&program,&mut report,&mut state,unit,index,consuming,depth);
+    insert(report.types,crate::ast::node_key(unit,index),clone(typ)); return typ;
+}
+fn merge(state:&mut State,branch:&State) {
+    if branch.exited { return; }
+    for i in 0..len(branch.moved_names) {
+        let name=text_at(branch.moved_names,i); let root=root_name(&name);
+        if contains_key(state.locals,root) && contains_key(branch.dead,name) && !contains_key(state.dead,name) {
+            insert(state.dead,clone(name),1); push(state.moved_names,name);
+        }
+    }
+}
+fn close_scope(state:&mut State,saved:texts) {
+    for i in len(saved)..len(state.names) {
+        let name=text_at(state.names,i); let removed=remove(state.locals,name); restore(&mut state,&name);
+        if contains_key(state.nonneg,name) { let cleared=remove(state.nonneg,name); }
+        if contains_key(state.lows,name) { let low=remove(state.lows,name); let high=remove(state.highs,name); }
+    }
+    state.names=saved;
+}
+fn pure_assertion(program:&crate::ast::Program,report:&Report,unit:int,index:int,depth:int)->bool {
+    if depth>96 { return false; }
+    borrow ast_unit_24=at(program.units,unit) { borrow node=at(ast_unit_24.tree.nodes,index) {
+    if node.kind==31 || node.kind==33 || node.kind==34 || node.kind==30 { return true; }
+    if node.kind==36 || node.kind==38 || node.kind==39 {
+        for i in 0..len(node.children) { if !pure_assertion(&program,&report,unit,at(node.children,i),depth+1) { return false; } }
+        return true;
+    }
+    if node.kind!=35 { return false; }
+    borrow ast_unit_25=at(program.units,unit) { borrow callee=at(ast_unit_25.tree.nodes,at(node.children,0)) {
+    let name=clone(callee.name); let module=crate::ast::module_name(&program,unit); let key=crate::ast::resolve(&program,&module,&name);
+    if callee.kind!=30 || contains_key(report.symbols,key) { return false; }
+    let allowed=integer_intrinsic(&name)>=0 || integer_type(&name) || text_eq(name,"len") || text_eq(name,"capacity") || text_eq(name,"at")
+        || text_eq(name,"byte_at") || text_eq(name,"codepoint_at") || text_eq(name,"next_char_boundary")
+        || text_eq(name,"is_char_boundary") || text_eq(name,"char_count") || text_eq(name,"text_eq")
+        || text_eq(name,"contains") || text_eq(name,"text_starts_with") || text_eq(name,"text_ends_with")
+        || text_eq(name,"is_int") || text_eq(name,"is_f64") || text_eq(name,"parse_int") || text_eq(name,"contains_key") || text_eq(name,"text_find")
+        || text_eq(name,"clone_get") || text_eq(name,"clone_at") || text_eq(name,"contains_id") || wire_read(&name);
+    if !allowed { return false; }
+    let inferred=crate::ast::node_key(unit,index);
+    if contains_key(report.types,inferred) {
+        let typ=clone_get(report.types,inferred); if crate::ast::owned(&typ) { return false; }
+    }
+    for i in 1..len(node.children) { if !pure_assertion(&program,&report,unit,at(node.children,i),depth+1) { return false; } }
+    return true;
+} } } } }
+fn check_match(program:&crate::ast::Program,report:&mut Report,state:&mut State,unit:int,index:int,node:&crate::ast::Node,depth:int) {
+    let typ=infer(&program,&mut report,&mut state,unit,at(node.children,0),true,0); let base=crate::ast::base(&typ);
+    let mut variants=0;
+    if text_eq(base,"ReadResult") || text_eq(base,"ProcessRun") { variants=2; }
+    else if contains_key(report.symbols,base) {
+        let symbol=clone_get(report.symbols,base); borrow ast_unit_26=at(program.units,symbol.unit) { borrow declaration=at(ast_unit_26.tree.nodes,symbol.node) {
+        if declaration.kind==3 { variants=len(declaration.children); }
+    } } }
+    if variants==0 { diagnostic(&program,&mut report,unit,index,"match requires an enum"); }
+    let module=crate::ast::module_name(&program,unit); let mut seen=Marks(); let mut wildcard=false;
+    let original=clone(state); let mut all_exit=true;
+    for i in 1..len(node.children) {
+        let arm_index=at(node.children,i); borrow ast_unit_27=at(program.units,unit) { borrow arm=at(ast_unit_27.tree.nodes,arm_index) {
+        let mut branch=clone(original); let mut payload="unit";
+        if text_eq(arm.name,"_") {
+            if wildcard || i+1!=len(node.children) || len(seen)>=variants { diagnostic(&program,&mut report,unit,arm_index,"wildcard must be final and cover remaining variants"); }
+            wildcard=true;
+            if len(arm.typ)>0 { diagnostic(&program,&mut report,unit,arm_index,"wildcard cannot bind a payload"); }
+        } else {
+            let key=crate::ast::resolve(&program,&module,&arm.name);
+            if contains_key(seen,key) { diagnostic(&program,&mut report,unit,arm_index,"duplicate match arm"); }
+            insert(seen,clone(key),1);
+            if text_eq(base,"ReadResult") && (text_eq(arm.name,"ReadResult::Ok") || text_eq(arm.name,"ReadResult::Err")) { payload="text"; }
+            else if text_eq(base,"ProcessRun") && text_eq(arm.name,"ProcessRun::Output") { payload="ProcessOutput"; }
+            else if text_eq(base,"ProcessRun") && text_eq(arm.name,"ProcessRun::Error") { payload="text"; }
+            else if contains_key(report.symbols,key) {
+                let symbol=clone_get(report.symbols,key); borrow ast_unit_28=at(program.units,symbol.unit) { borrow variant=at(ast_unit_28.tree.nodes,symbol.node) {
+                if symbol.kind!=9 || !text_eq(symbol.typ,base) { diagnostic(&program,&mut report,unit,arm_index,"match arm belongs to another enum"); }
+                let origin=crate::ast::module_name(&program,symbol.unit); payload=normal(&program,&origin,&variant.typ);
+            } } } else { diagnostic(&program,&mut report,unit,arm_index,concat("unknown enum variant ",key)); }
+            if text_eq(payload,"unit") {
+                if len(arm.typ)>0 { diagnostic(&program,&mut report,unit,arm_index,"unit variant cannot bind payload"); }
+            } else {
+                if len(arm.typ)==0 { diagnostic(&program,&mut report,unit,arm_index,"payload variant needs binding"); }
+                let mut binding_type=clone(payload);
+                if text_starts_with(typ,"&mut ") { binding_type=concat("&mut ",payload); }
+                else if text_starts_with(typ,"&") { binding_type=concat("&",payload); }
+                let binding=clone(arm.typ);bind(&program,&mut report,&mut branch,unit,arm_index,binding,binding_type,text_starts_with(typ,"&mut "));
+            }
+        }
+        if text_starts_with(typ,"&") {
+            borrow ast_unit_29=at(program.units,unit) { borrow expression=at(ast_unit_29.tree.nodes,at(node.children,0)) {
+            if expression.kind==38 {
+                let source=place(&program,unit,at(expression.children,0),0);
+                push(branch.loans,Loan{path:source,exclusive:text_starts_with(typ,"&mut ")});
+            }
+        } } }
+        check_statement(&program,&mut report,&mut branch,unit,at(arm.children,0),depth+1);
+        if !branch.exited { all_exit=false; }
+        merge(&mut state,&branch);
+    } } }
+    if !wildcard && len(seen)!=variants { diagnostic(&program,&mut report,unit,index,"nonexhaustive enum match"); }
+    state.exited=all_exit && len(node.children)>1;
+}
+fn check_statement(program:&crate::ast::Program,report:&mut Report,state:&mut State,unit:int,index:int,depth:int) {
+    if depth>96 { diagnostic(&program,&mut report,unit,index,"statement checking exceeds 96"); return; }
+    borrow ast_unit_30=at(program.units,unit) { borrow node=at(ast_unit_30.tree.nodes,index) {
+    if node.kind==10 {
+        let saved=clone(state.names);
+        for i in 0..len(node.children) {
+            let child=at(node.children,i);
+            if state.exited { diagnostic(&program,&mut report,unit,child,"unreachable statement"); break; }
+            check_statement(&program,&mut report,&mut state,unit,child,depth+1);
+        }
+        close_scope(&mut state,saved); return;
+    }
+    if node.kind==11 {
+        let actual=infer(&program,&mut report,&mut state,unit,at(node.children,0),true,0);
+        let mut typ=clone(actual);
+        if len(node.typ)>0 { typ=validate_type(&program,&mut report,unit,index,&node.typ,false); same(&program,&mut report,unit,index,&actual,&typ); }
+        if text_starts_with(typ,"&") || crate::ast::is_span(&typ) || text_eq(typ,"str") || text_eq(typ,"unit") || text_eq(typ,"range") { diagnostic(&program,&mut report,unit,index,"let requires a storable value; references need scoped borrow"); }
+        insert(report.types,crate::ast::node_key(unit,index),clone(typ));
+        let binding=clone(node.name);let mutable=node.flag==1;let integer=text_eq(typ,"int") && !contains_key(state.locals,node.name);bind(&program,&mut report,&mut state,unit,index,binding,typ,mutable);
+        if !mutable && integer && proven_nonnegative(&program,&report,unit,at(node.children,0),0) { insert(state.nonneg,clone(node.name),1); }
+        if !mutable && integer {
+            let range=proven_range(&program,&report,unit,at(node.children,0),0);
+            if len(range)==2 { insert(state.lows,clone(node.name),at(range,0)); insert(state.highs,clone(node.name),at(range,1)); }
+        }
+        return;
+    }
+    if node.kind==12 {
+        let left=at(node.children,0); let path=place(&program,unit,left,0); mutable_place(&program,&mut report,&state,unit,left);
+        let expected=place_type(&program,&report,&state,unit,left,0);
+        if text_eq(expected,"?") { diagnostic(&program,&mut report,unit,left,"unknown assignment target"); }
+        let actual=infer(&program,&mut report,&mut state,unit,at(node.children,1),true,0);
+        same(&program,&mut report,unit,index,&actual,&expected); restore(&mut state,&path); return;
+    }
+    if node.kind==13 {
+        let mut actual="unit";
+        if len(node.children)>0 { actual=infer(&program,&mut report,&mut state,unit,at(node.children,0),true,0); }
+        let expected=clone(state.return_type); same(&program,&mut report,unit,index,&actual,&expected); state.exited=true; return;
+    }
+    if node.kind==14 || node.kind==15 || node.kind==22 {
+        if node.kind==14 { note_effect(&mut report,3); }
+        let actual=infer(&program,&mut report,&mut state,unit,at(node.children,0),false,0);
+        if node.kind==15 {
+            let expected="bool"; same(&program,&mut report,unit,index,&actual,&expected);
+            if !pure_assertion(&program,&report,unit,at(node.children,0),0) { diagnostic(&program,&mut report,unit,index,"assertion requires pure builtins and scalar operations; bind calls/literals first"); }
+        }
+        if node.kind==14 && !textlike(&actual) && !integer_type(&actual) && !text_eq(actual,"bool") { diagnostic(&program,&mut report,unit,index,"print supports int/bool/text/str"); }
+        return;
+    }
+    if node.kind==16 {
+        let condition=infer(&program,&mut report,&mut state,unit,at(node.children,0),false,0); let boolean="bool";
+        same(&program,&mut report,unit,index,&condition,&boolean);
+        let mut yes=clone(state); let mut no=clone(state);
+        check_statement(&program,&mut report,&mut yes,unit,at(node.children,1),depth+1);
+        if len(node.children)>2 { check_statement(&program,&mut report,&mut no,unit,at(node.children,2),depth+1); }
+        merge(&mut state,&yes); merge(&mut state,&no); state.exited=yes.exited && no.exited; return;
+    }
+    if node.kind==17 || node.kind==18 {
+        let value_index=at(node.children,0); let value=infer(&program,&mut report,&mut state,unit,value_index,false,0);
+        let mut body=clone(state); body.loop_depth=body.loop_depth+1;
+        if node.kind==17 { let boolean="bool"; same(&program,&mut report,unit,index,&value,&boolean); note_effect(&mut report,4); }
+        else {
+            let mut typ="int";
+            if !text_eq(value,"range") {
+                if !text_starts_with(value,"&") { diagnostic(&program,&mut report,unit,index,"vector iteration requires & or &mut"); }
+                let elem=element(&program,&report,&value,0);
+                let base=crate::ast::base(&value);
+                // v1.4 universal for: builtin ints/texts, fixed [T;N] and the text/int
+                // keys of a typed map iterate under a shared loan only.
+                let sequence=text_eq(base,"ints") || text_eq(base,"texts") || crate::ast::is_fixed(&base);
+                if is_map(&report,&value) {
+                    if !text_eq(elem,"text") && !integer_type(&elem) { diagnostic(&program,&mut report,unit,index,"map iteration requires text or int keys"); }
+                } else if text_eq(elem,"?") || (!is_vector(&report,&value) && !crate::ast::is_span(&base) && !sequence) { diagnostic(&program,&mut report,unit,index,"borrowed iteration requires nominal vector"); }
+                if text_starts_with(value,"&mut ") && (sequence || is_map(&report,&value)) { diagnostic(&program,&mut report,unit,index,"mutable iteration requires a nominal vector"); }
+                typ=concat("&",elem); if text_starts_with(value,"&mut ") { typ=concat("&mut ",elem); }
+            }
+            let binding=clone(node.name);bind(&program,&mut report,&mut body,unit,index,binding,typ,false);
+            borrow ast_unit_31=at(program.units,unit) { borrow expression=at(ast_unit_31.tree.nodes,value_index) {
+            if expression.kind==38 {
+                let source=place(&program,unit,at(expression.children,0),0);
+                push(body.loans,Loan{path:source,exclusive:text_starts_with(value,"&mut ")});
+            }
+            if expression.kind==39 && text_eq(value,"range") && proven_nonnegative(&program,&report,unit,at(expression.children,0),0) { insert(body.nonneg,clone(node.name),1); }
+            if expression.kind==39 && text_eq(value,"range") {
+                let start=proven_range(&program,&report,unit,at(expression.children,0),0); let end=proven_range(&program,&report,unit,at(expression.children,1),0);
+                if len(start)==2 && len(end)==2 && at(start,0)<=at(end,1)-1 { insert(body.lows,clone(node.name),at(start,0)); insert(body.highs,clone(node.name),at(end,1)-1); }
+            }
+        } } }
+        check_statement(&program,&mut report,&mut body,unit,at(node.children,1),depth+1);
+        for i in 0..len(body.moved_names) {
+            let moved=text_at(body.moved_names,i); let root=root_name(&moved);
+            if contains_key(state.locals,root) && contains_key(body.dead,moved) && !contains_key(state.dead,moved) {
+                diagnostic(&program,&mut report,unit,index,concat("outer owner moved in repeatable loop: ",moved));
+            }
+        }
+        body.exited=false; merge(&mut state,&body); return;
+    }
+    if node.kind==19 {
+        let initializer=at(node.children,0); borrow ast_unit_32=at(program.units,unit) { borrow call_node=at(ast_unit_32.tree.nodes,initializer) {
+        let mut valid=false;
+        if call_node.kind==35 {
+            borrow ast_unit_33=at(program.units,unit) { borrow callee=at(ast_unit_33.tree.nodes,at(call_node.children,0)) {
+            valid=callee.kind==30 && (text_eq(callee.name,"at") || text_eq(callee.name,"at_pair") || text_eq(callee.name,"get") || text_eq(callee.name,"region"));
+            if contains(node.name,",") != text_eq(callee.name,"at_pair") || (text_eq(callee.name,"at_pair") && node.flag!=1) { diagnostic(&program,&mut report,unit,index,"at_pair requires borrow mut (left,right)"); }
+            let module=crate::ast::module_name(&program,unit);let symbol=crate::ast::resolve(&program,&module,&callee.name);if contains_key(report.symbols,symbol) { diagnostic(&program,&mut report,unit,index,"scoped borrow requires builtin at/get/region/at_pair"); }
+            if node.flag==1 && len(call_node.children)>1 { mutable_place(&program,&mut report,&state,unit,at(call_node.children,1)); }
+        } } }
+        if !valid { diagnostic(&program,&mut report,unit,index,"scoped borrow requires at/get/region"); }
+        state.aliasing=true; let selected=infer(&program,&mut report,&mut state,unit,initializer,false,0); state.aliasing=false;
+        let base=crate::ast::base(&selected); let mut typ=concat("&",base);
+        if node.flag==1 { typ=concat("&mut ",base); if text_eq(base,"str") { diagnostic(&program,&mut report,unit,index,"str regions are immutable"); } }
+        let saved=clone(state.names);
+        if contains(node.name,",") { let names=split(node.name,","); bind(&program,&mut report,&mut state,unit,index,text_at(names,0),clone(typ),true); bind(&program,&mut report,&mut state,unit,index,text_at(names,1),typ,true); }
+        else { let binding=clone(node.name);let mutable=node.flag==1;bind(&program,&mut report,&mut state,unit,index,binding,typ,mutable); }
+        let mut source="";
+        if call_node.kind==35 && len(call_node.children)>1 { source=place(&program,unit,at(call_node.children,1),0); }
+        if len(source)==0 { diagnostic(&program,&mut report,unit,index,"scoped borrow requires a named owner"); }
+        push(state.loans,Loan{path:source,exclusive:node.flag==1});
+        check_statement(&program,&mut report,&mut state,unit,at(node.children,1),depth+1);
+        let released=pop(state.loans); close_scope(&mut state,saved); return;
+    } } }
+    if node.kind==20 { check_match(&program,&mut report,&mut state,unit,index,&node,depth); return; }
+    if node.kind==23 || node.kind==24 {
+        if state.loop_depth==0 { diagnostic(&program,&mut report,unit,index,"break/continue outside loop"); }
+        state.exited=true; return;
+    }
+    diagnostic(&program,&mut report,unit,index,"unsupported statement node");
+} } }
+fn check_cycle(program:&crate::ast::Program,report:&mut Report,unit:int,index:int,typ:&text,trail:&text,depth:int) {
+    let base=crate::ast::base(&typ);
+    if crate::ast::primitive(&base) || crate::ast::is_id(&base) || text_eq(base,"ReadResult") || !contains_key(report.symbols,base) { return; }
+    let marker=concat("|",concat(base,"|"));
+    if contains(trail,marker) { diagnostic(&program,&mut report,unit,index,concat("recursive owned type ",base)); return; }
+    if depth>=96 { diagnostic(&program,&mut report,unit,index,"type graph exceeds 96"); return; }
+    let symbol=clone_get(report.symbols,base); if (symbol.kind<2 || symbol.kind>5) && symbol.kind!=25 { return; }
+    borrow ast_unit_34=at(program.units,symbol.unit) { borrow node=at(ast_unit_34.tree.nodes,symbol.node) { let module=crate::ast::module_name(&program,symbol.unit);
+    let next=concat(trail,marker);
+    for i in 0..len(node.children) {
+        borrow ast_unit_35=at(program.units,symbol.unit) { borrow field=at(ast_unit_35.tree.nodes,at(node.children,i)) { let child_type=normal(&program,&module,&field.typ);
+        check_cycle(&program,&mut report,unit,index,&child_type,&next,depth+1);
+    } } }
+} } }
+fn headers(program:&crate::ast::Program,report:&mut Report) {
+    for unit in 0..len(program.units) {
+        borrow source=at(program.units,unit) {
+            if len(source.tree.error)>0 { continue; }
+            for i in 0..len(source.tree.roots) {
+                let index=at(source.tree.roots,i); borrow ast_unit_36=at(program.units,unit) { borrow node=at(ast_unit_36.tree.nodes,index) {
+                if node.kind==1 {
+                    let mut found=false;
+                    let required=crate::ast::sibling(&source.name,&node.name);
+                    for other in &program.units { if text_eq(other.name,required) { found=true; } }
+                    if !found { let message=concat("missing module ",node.name);diagnostic(&program,&mut report,unit,index,message); }
+                }
+                if (node.kind>=2 && node.kind<=6) || node.kind==25 {
+                    let mut names=Marks(); let mut count=len(node.children); if node.kind==6 { count=count-1; }
+                    for j in 0..count {
+                        let field_index=at(node.children,j); borrow ast_unit_37=at(program.units,unit) { borrow field=at(ast_unit_37.tree.nodes,field_index) {
+                        if contains_key(names,field.name) { let message=concat("duplicate member/parameter ",field.name);diagnostic(&program,&mut report,unit,field_index,message); }
+                        insert(names,clone(field.name),1);
+                        let stored=node.kind!=6 && !(node.kind==3 && text_eq(field.typ,"unit"));
+                        let typ=validate_type(&program,&mut report,unit,field_index,&field.typ,stored);
+                        insert(report.types,crate::ast::node_key(unit,field_index),typ);
+                    } } }
+                    if node.kind==6 {
+                        let typ=validate_type(&program,&mut report,unit,index,&node.typ,false);
+                        if text_starts_with(typ,"&") || text_eq(typ,"str") { diagnostic(&program,&mut report,unit,index,"borrowed returns are outside the subset"); }
+                        insert(report.types,crate::ast::node_key(unit,index),typ);
+                        if contains(node.name,"::") {
+                            let parts=split(node.name,"::");
+                            if len(parts)!=2 || count==0 { diagnostic(&program,&mut report,unit,index,"impl requires a local owner and typed self receiver"); }
+                            else {
+                                let owner=text_at(parts,0); borrow ast_unit_38=at(program.units,unit) { borrow receiver=at(ast_unit_38.tree.nodes,at(node.children,0)) { let received=crate::ast::base(&receiver.typ);
+                                if !text_eq(receiver.name,"self") || !text_eq(received,owner) { diagnostic(&program,&mut report,unit,index,"method first parameter must be self:Self, self:&Self or self:&mut Self"); }
+                            } } }
+                        }
+                    } else {
+                        let module=crate::ast::module_name(&program,unit); let typ=crate::ast::resolve(&program,&module,&node.name); let trail="";
+                        check_cycle(&program,&mut report,unit,index,&typ,&trail,0);
+                        if node.kind==4 && node.flag>=2 {
+                            let elem=element(&program,&report,&typ,0);
+                            if !contains_key(report.symbols,elem) { diagnostic(&program,&mut report,unit,index,"SoA element must be a nonempty record"); }
+                            else { let symbol=clone_get(report.symbols,elem); borrow ast_unit_39=at(program.units,symbol.unit) { borrow record=at(ast_unit_39.tree.nodes,symbol.node) { if record.kind!=2 || len(record.children)==0 { diagnostic(&program,&mut report,unit,index,"SoA element must be a nonempty record"); } } } }
+                        }
+                        if node.kind==5 {
+                            let key_type=element(&program,&report,&typ,0);
+                            if !crate::ast::is_id(&key_type) && !text_eq(key_type,"text") && (!crate::ast::primitive(&key_type) || text_eq(key_type,"bool") || text_eq(key_type,"str") || text_eq(key_type,"f64") || text_eq(key_type,"f32") || text_eq(key_type,"ints") || text_eq(key_type,"texts") || text_eq(key_type,"unit")) {
+                                diagnostic(&program,&mut report,unit,index,"map key must be text or integer");
+                            }
+                        }
+                    }
+                }
+            } } }
+        }
+    }
+}
+pub fn check(program:&crate::ast::Program)->Report {
+    let mut report=Report{symbols:Symbols(),types:Types(),diagnostics:texts(),resolved:0,moves:0,functions:0,nonnegative:Marks(),lows:Marks(),highs:Marks(),effects:Marks(),callers:texts(),callees:texts(),current:""};
+    collect(&program,&mut report); headers(&program,&mut report);
+    if len(report.diagnostics)>0 { return report; }
+    for unit in 0..len(program.units) {
+        let module=crate::ast::module_name(&program,unit);
+        borrow source=at(program.units,unit) {
+            for i in 0..len(source.tree.roots) {
+                let index=at(source.tree.roots,i); borrow ast_unit_40=at(program.units,unit) { borrow node=at(ast_unit_40.tree.nodes,index) {
+                if node.kind!=6 { continue; }
+                let return_type=normal(&program,&module,&node.typ); let mut state=empty_state(clone(return_type));
+                report.current=crate::ast::resolve(&program,&module,&node.name);
+                for j in 0..len(node.children)-1 {
+                    let parameter_index=at(node.children,j); borrow ast_unit_41=at(program.units,unit) { borrow parameter=at(ast_unit_41.tree.nodes,parameter_index) { let typ=normal(&program,&module,&parameter.typ);
+                    let binding=clone(parameter.name);let mutable=parameter.flag==1;bind(&program,&mut report,&mut state,unit,parameter_index,binding,typ,mutable);
+                } } }
+                let body=at(node.children,len(node.children)-1); check_statement(&program,&mut report,&mut state,unit,body,0);
+                if !text_eq(return_type,"unit") && !state.exited { diagnostic(&program,&mut report,unit,index,"function may reach end without return"); }
+                report.functions=report.functions+1; report.current="";
+            } } }
+        }
+    }
+    if len(report.diagnostics)==0 { validate_effects(&program,&mut report); }
+    return report;
+}
+fn flag(marks:&Marks,key:&text)->int { if contains_key(marks,key) { return clone_get(marks,key); } return 0; }
+// v1.2 @effect(no_alloc, no_io, bounded), checked after every body like the
+// Rust effects::validate: allocation/I/O propagate over the user call graph to
+// a fixed point; bounded is proven bottom-up from functions without while or
+// waiting builtins whose every user callee is proven and publishes bounded, so
+// direct and mutual recursion never acquire the proof. The first violated
+// effect (function order, then declared effect order) is reported.
+fn validate_effects(program:&crate::ast::Program,report:&mut Report) {
+    let mut declared=Contracts(); let mut masks=Marks(); let mut keys=texts(); let mut units=[]; let mut nodes=[];
+    for unit in 0..len(program.units) {
+        let module=crate::ast::module_name(&program,unit);
+        borrow source=at(program.units,unit) {
+            for i in 0..len(source.tree.roots) {
+                let index=at(source.tree.roots,i); borrow ast_unit_47=at(program.units,unit) { borrow node=at(ast_unit_47.tree.nodes,index) {
+                if node.kind==6 { push(keys,crate::ast::resolve(&program,&module,&node.name)); push(units,unit); push(nodes,index); }
+                if node.kind==26 && len(node.children)==1 {
+                    borrow ast_unit_48=at(program.units,unit) { borrow target=at(ast_unit_48.tree.nodes,at(node.children,0)) {
+                    let key=crate::ast::resolve(&program,&module,&target.name); insert(declared,clone(key),clone(node.name)); insert(masks,key,node.flag);
+                    } }
+                }
+            } } }
+        }
+    }
+    if len(declared)==0 { return; }
+    let mut summary=clone(report.effects); let mut changed=true;
+    while changed {
+        changed=false;
+        for i in 0..len(report.callers) {
+            let caller=text_at(report.callers,i); let callee=text_at(report.callees,i);
+            let old=flag(&summary,&caller); let merged=bit_or(old,bit_and(flag(&summary,&callee),3));
+            if merged!=old { insert(summary,caller,merged); changed=true; }
+        }
+    }
+    let mut proven=Marks(); changed=true;
+    while changed {
+        changed=false;
+        for i in 0..len(keys) {
+            let key=text_at(keys,i);
+            if contains_key(proven,key) || bit_and(flag(&report.effects,&key),12)!=0 { continue; }
+            let mut finite=true;
+            for j in 0..len(report.callers) {
+                let caller=text_at(report.callers,j);
+                if text_eq(caller,key) { let callee=text_at(report.callees,j); if !contains_key(proven,callee) || bit_and(flag(&masks,&callee),4)==0 { finite=false; } }
+            }
+            if finite { insert(proven,key,1); changed=true; }
+        }
+    }
+    for i in 0..len(keys) {
+        let key=text_at(keys,i);
+        if !contains_key(declared,key) { continue; }
+        let effects=split(clone_get(declared,key),",");
+        for j in 0..len(effects) {
+            let effect=text_at(effects,j); let bits=flag(&summary,&key);
+            let violated=(text_eq(effect,"no_alloc") && bit_and(bits,1)!=0) || (text_eq(effect,"no_io") && bit_and(bits,2)!=0) || (text_eq(effect,"bounded") && !contains_key(proven,key));
+            if violated {
+                let unit=at(units,i); let index=at(nodes,i); let mut name="";
+                borrow ast_unit_49=at(program.units,unit) { borrow node=at(ast_unit_49.tree.nodes,index) { name=clone(node.name); } }
+                diagnostic(&program,&mut report,unit,index,concat("effect contract ",concat(effect,concat(" violated in ",concat(name," (including transitive calls)")))));
+                return;
+            }
+        }
+    }
+}
+
+

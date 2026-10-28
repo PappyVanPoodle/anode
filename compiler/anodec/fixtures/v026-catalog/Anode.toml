@@ -1,0 +1,10 @@
+[package]
+name = "v026-catalog"
+version = "0.1.0"
+[build]
+entry = "main.an"
+[capabilities]
+process_args = true
+[dependencies]
+west = "../v026-packages/metrics"
+east = "../v026-packages/metrics"

@@ -1,0 +1,4 @@
+pub struct Metric { label:text, score:int }
+pub soa vector Metrics(Metric);
+pub vector Scores(int);
+pub fn metric(label:text,score:int)->Metric { return Metric{label:label,score:score}; }

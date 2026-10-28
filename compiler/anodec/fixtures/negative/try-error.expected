@@ -1,0 +1,2 @@
+fixtures/negative/try-error.an:byte 101: type mismatch: expected int, got text
+frontend rejected input

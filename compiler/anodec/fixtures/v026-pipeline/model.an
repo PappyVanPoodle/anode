@@ -1,0 +1,4 @@
+pub vector Links(id(Nodes));
+pub struct Node { label:text, score:int, links:Links }
+pub arena Nodes(Node);
+pub enum Result { Ready(int), Failed(text) }

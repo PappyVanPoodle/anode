@@ -1,0 +1,9 @@
+mod util;
+
+fn main() {
+    let mode=encoding::Mode::Safe(2);
+    match mode {
+        encoding::Mode::Fast=>{ print 0; }
+        encoding::Mode::Safe(extra)=>{ print util::twice(encoding::width()) + local::offset() + extra; }
+    }
+}

@@ -1,0 +1,4 @@
+fixtures/negative/v028-intrinsic-reference.an:byte 47: integer intrinsic requires integer operands
+fixtures/negative/v028-intrinsic-reference.an:byte 47: type mismatch: expected &int, got int
+fixtures/negative/v028-intrinsic-reference.an:byte 22: let requires a storable value; references need scoped borrow
+frontend rejected input

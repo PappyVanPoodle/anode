@@ -1,0 +1,2 @@
+fixtures/negative/malformed.an: parse: 1:23: expected expression; construct is outside the subset
+frontend rejected input

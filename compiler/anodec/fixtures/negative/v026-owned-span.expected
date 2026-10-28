@@ -1,0 +1,2 @@
+fixtures/negative/v026-owned-span.an:byte 22: vector spans are borrowed-only nonowning parameters
+frontend rejected input

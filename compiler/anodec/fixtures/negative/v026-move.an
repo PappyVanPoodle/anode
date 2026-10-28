@@ -1,0 +1,1 @@
+vector V(int);fn take(v:V){}fn main(){let mut v=V();push(v,1);borrow window=region(v,0,1){take(v);}}

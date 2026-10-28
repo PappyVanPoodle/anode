@@ -1,0 +1,108 @@
+// BEHAVIOR-EQUIVALENT 1.1.0 reference for fixtures/v120-effects-wire.an.
+// The 1.1.0 seed has no try_write_u*_be, so each big-endian write calls put16/
+// put32/put64 below, which apply exactly the contract N2 predicate (offset < 0,
+// offset > 32 or 32 - offset < width returns false and leaves the frame
+// unchanged; otherwise most-significant byte first). Everything else is the
+// regression source verbatim; verify.ps1 runs this file with the seed as the
+// differential oracle for every run and checked fault of the target program.
+@effect(no_alloc, no_io, bounded)
+fn put16(frame:&mut [u8;32],offset:int,value:u16)->bool {
+    if offset<0 || offset>32 || 32-offset<2 { return false; }
+    set(frame,offset,u8(shr(value,8)));
+    set(frame,offset+1,u8(bit_and(value,u16(255))));
+    return true;
+}
+@effect(no_alloc, no_io, bounded)
+fn put32(frame:&mut [u8;32],offset:int,value:u32)->bool {
+    if offset<0 || offset>32 || 32-offset<4 { return false; }
+    set(frame,offset,u8(shr(value,24)));
+    set(frame,offset+1,u8(bit_and(shr(value,16),u32(255))));
+    set(frame,offset+2,u8(bit_and(shr(value,8),u32(255))));
+    set(frame,offset+3,u8(bit_and(value,u32(255))));
+    return true;
+}
+@effect(no_alloc, no_io, bounded)
+fn put64(frame:&mut [u8;32],offset:int,value:u64)->bool {
+    if offset<0 || offset>32 || 32-offset<8 { return false; }
+    for k in 0..8 { set(frame,offset+k,u8(bit_and(shr(value,56-8*k),u64(255)))); }
+    return true;
+}
+@effect(no_alloc, no_io, bounded)
+fn mix(seq:u32,lane:u32)->u32 {
+    return bit_xor(rotl(wrapping_mul(seq,u32(2654435761)),int(lane)+5),wrapping_add(lane,u32(40503)));
+}
+@effect(no_alloc, no_io, bounded)
+fn checksum(frame:&[u8;32])->u32 {
+    let mut h=u32(2166136261);
+    for i in 0..28 { h=wrapping_mul(bit_xor(h,u32(at(frame,i))),u32(16777619)); }
+    return h;
+}
+@effect(no_alloc, no_io, bounded)
+fn encode(mut frame:[u8;32],seq:u32,stamp:u64)->[u8;32] {
+    let magic=put16(&mut frame,0,u16(41342));
+    let version=put16(&mut frame,2,u16(258));
+    let sequence=put32(&mut frame,4,seq);
+    let time=put64(&mut frame,8,stamp);
+    for i in 0..3 {
+        let lane=put32(&mut frame,16+i*4,mix(seq,u32(i)));
+        assert lane;
+    }
+    let sum=checksum(&frame);
+    let sealed=put32(&mut frame,28,sum);
+    assert magic && version && sequence && time && sealed;
+    return frame;
+}
+@effect(no_alloc, no_io, bounded)
+fn valid(frame:&[u8;32])->bool {
+    let sum=checksum(&frame);
+    return read_u16_be(frame,0)==u16(41342) && wire_read_u32_be(frame,28)==sum;
+}
+@effect(no_io)
+fn hex(frame:&[u8;32],start:int,count:int)->text {
+    let digits="0123456789abcdef"; let mut out=""; let mut i=start;
+    while i<start+count {
+        let b=int(at(frame,i));
+        out=concat(out,concat(slice(digits,b/16,b/16+1),slice(digits,b%16,b%16+1)));
+        i=i+1;
+    }
+    return out;
+}
+fn main() {
+    let mut mode="default"; let mut value=0;
+    if args_count()>=1 { mode=arg(0); }
+    if args_count()>=2 { value=parse_int(arg(1)); }
+    let mut frames=4; if text_eq(mode,"run") { frames=value; }
+    let mut total=u64(0); let mut last=[u8(0);32];
+    for n in 0..frames {
+        let frame=encode([u8(0);32],u32(n*7+1),u64(n)*u64(1000000007)+u64(1700000000000));
+        print concat("frame ",int_text(n));
+        print hex(&frame,0,16);
+        print read_u32_be(frame,4);
+        print read_u64_be(frame,8);
+        print wire_read_u32_be(frame,16);
+        print read_u32_be(frame,20);
+        print read_u32_be(frame,24);
+        print read_u32_be(frame,28);
+        print valid(&frame);
+        total=wrapping_add(total,u64(read_u32_be(frame,28)));
+        last=frame;
+    }
+    let mut probe=encode([u8(0);32],u32(99),u64(5));
+    let before=hex(&probe,0,32);
+    let negative=put32(&mut probe,0-1,u32(1));
+    let edge=put32(&mut probe,29,u32(1));
+    let unchanged=hex(&probe,0,32);
+    let mut offset=3; if text_eq(mode,"offset") { offset=value; }
+    let moved=put64(&mut probe,offset,bit_not(u64(81985529216486895)));
+    let exact=put16(&mut probe,30,u16(65535));
+    let after=hex(&probe,0,32);
+    print negative; print edge; print text_eq(before,unchanged);
+    print moved; print exact; print after;
+    print valid(&probe);
+    print hex(&last,16,16);
+    print total;
+    if text_eq(mode,"read") { print read_u32_be(probe,value); }
+    if text_eq(mode,"index") { print at(probe,value); }
+    if text_eq(mode,"overflow") { let top=9223372036854775807-value; print top+value+1; }
+    if text_eq(mode,"convert") { print u8(value); }
+}

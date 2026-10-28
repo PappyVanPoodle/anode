@@ -1,0 +1,2 @@
+fixtures/negative/v120-effect-transitive.an:byte 190: effect contract bounded violated in seal (including transitive calls)
+frontend rejected input

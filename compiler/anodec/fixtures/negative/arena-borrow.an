@@ -1,0 +1,2 @@
+arena A(text);
+fn main(){let mut a=A();let h=alloc(a,"owner");borrow item=get(a,h){let removed=free(a,h);}}

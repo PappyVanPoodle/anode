@@ -1,0 +1,1 @@
+fn main(){let value=wrapping_mul(1.0,2.0);}

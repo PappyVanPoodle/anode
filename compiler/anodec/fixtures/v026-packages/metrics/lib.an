@@ -1,0 +1,17 @@
+mod model;
+pub enum Checked { Value(int), Problem(text) }
+pub fn checked(value:int)->Checked {
+    if value<0 { return Checked::Problem("negative input"); }
+    return Checked::Value(value);
+}
+pub fn sum(values:&[crate::model::Scores])->int {
+    let mut total=0;for value in &values { total=total+value; }return total;
+}
+pub fn adjust(values:&mut [crate::model::Scores],increment:int) {
+    for value in &mut values { value=value+increment; }
+}
+pub fn interior(values:&mut [crate::model::Scores],increment:int)->Checked {
+    let accepted=try checked(increment);
+    if len(values)>2 { borrow mut inner=region(values,1,len(values)-2) { adjust(&mut inner,accepted); } }
+    return Checked::Value(len(values));
+}

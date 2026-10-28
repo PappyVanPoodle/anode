@@ -1,0 +1,51 @@
+// v1.0.0 self-hosted regression: stage target, 0.29-seed oracle and known-output
+// golden (fixtures/v100-borrow-loops-golden.mjs). Shared-borrow loops over spans and
+// local vectors push into separate local vectors while width intrinsics and proven
+// power-of-two lowering run in the same bodies; unproven forms keep checked C.
+vector Words(int);
+fn evens(values:&[Words])->Words {
+    let mut out=Words();
+    for value in &values { if value%2==0 { push(out,value); } }
+    return out;
+}
+fn lane_hash(values:&[Words])->u32 {
+    let mut h=u32(2166136261);
+    for value in &values { h=wrapping_mul(bit_xor(h,u32(bit_and(value,255))),u32(16777619));h=rotl(h,5); }
+    return h;
+}
+fn spread(values:&[Words])->Words {
+    let mut counts=Words();
+    for i in 0..8 { push(counts,0); }
+    let n=len(values);
+    for i in 0..n { let slot=i%8;let lane=i/4;borrow mut cell=at(counts,slot) { cell=cell+at(values,i)+lane; } }
+    return counts;
+}
+fn probe(values:&[Words],index:int)->int { let mut total=0;for value in &values { total=total+value; }return total+at(values,index); }
+fn digits(label:text)->Words {
+    let mut out=Words();
+    for i in 0..len(label) { let b=byte_at(label,i);push(out,b%16);push(out,b/16); }
+    return out;
+}
+fn main(){
+    let mut count=48;let mut mode="run";
+    if args_count()>0 { mode=arg(0);count=parse_int(arg(1)); }
+    let mut words=Words();
+    for i in 0..count { push(words,bit_xor(i*37,shl(i,3))-50); }
+    if text_eq(mode,"overflow") { push(words,9223372036854775807);push(words,9223372036854775807); }
+    let mut kept=Words();let mut shifted=Words();
+    for value in &words { if value>0 { push(kept,value); }push(shifted,shr(value,2)); }
+    print len(kept);print len(shifted);
+    let mut folded=0;for value in &shifted { folded=bit_xor(folded,rotl(value,7)); }print folded;
+    borrow all=region(words,0,len(words)) {
+        let picked=evens(&all);print len(picked);print lane_hash(&all);
+        if text_eq(mode,"index") { print probe(&all,count); }
+        let counts=spread(&all);for value in &counts { print value; }
+        if len(all)>4 { borrow middle=region(all,2,len(all)-4) { let inner=evens(&middle);print len(inner);print lane_hash(&middle);print probe(&middle,0); } }
+    }
+    let codes=digits("anode-1.0.0");let mut code_sum=0;for value in &codes { code_sum=code_sum*3+value; }print code_sum;
+    let mut negatives=0;for value in &words { if value<0 { negatives=negatives+value/4+value%4; } }print negatives;
+    if text_eq(mode,"bounds") { borrow window=region(words,count,4) { print len(window); } }
+    if text_eq(mode,"zero-rem") { let zero=len(mode)-len(mode);print count%zero; }
+    if text_eq(mode,"zero-div") { let zero=len(mode)-len(mode);print count/zero; }
+    if text_eq(mode,"convert") { print u32(at(words,0)); }
+}

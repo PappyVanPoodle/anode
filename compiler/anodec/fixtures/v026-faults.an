@@ -1,0 +1,10 @@
+vector Values(int);
+fn main() {
+    let mut values=Values();push(values,10);push(values,20);push(values,30);let mode=arg(0);let n=parse_int(arg(1));
+    if text_eq(mode,"start") { borrow view=region(values,n,1) { print len(view); } }
+    else if text_eq(mode,"count") { borrow view=region(values,1,n) { print len(view); } }
+    else if text_eq(mode,"nested") { borrow view=region(values,1,1) { borrow sub=region(view,0,n) { print len(sub); } } }
+    else if text_eq(mode,"index") { borrow view=region(values,1,1) { print at(view,n); } }
+    else if text_eq(mode,"pair") { borrow mut view=region(values,0,3) { borrow mut (a,b)=at_pair(view,0,n) { a=a+1;b=b+2; } } }
+    else if text_eq(mode,"legacy") { let fixed=[10,20,30];borrow view=region(fixed,1,n) { print len(view); } }
+}

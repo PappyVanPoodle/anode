@@ -1,0 +1,6 @@
+mod model;mod engine;
+fn main() {
+    let mut count=8;if args_count()>0 { count=parse_int(arg(0)); }assert count>=4 && count<=64;
+    match engine::run(count,false) { model::Result::Ready(score)=>{print score;}model::Result::Failed(message)=>{print message;} }
+    match engine::run(count,true) { model::Result::Ready(score)=>{print score;}model::Result::Failed(message)=>{print message;} }
+}

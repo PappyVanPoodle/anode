@@ -1,0 +1,2 @@
+fixtures/negative/v120-effect-io.an:byte 110: effect contract no_io violated in lanes (including transitive calls)
+frontend rejected input

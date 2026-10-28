@@ -1,0 +1,8 @@
+// Test double for the std encoding package (anodec std resolution).
+pub enum Mode { Fast, Safe(int) }
+
+pub fn width()->int {
+    return 4;
+}
+
+fn main() {}

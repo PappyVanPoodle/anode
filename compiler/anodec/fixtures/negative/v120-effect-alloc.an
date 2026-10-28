@@ -1,0 +1,4 @@
+// no_alloc rejects text literals and allocating text builtins.
+@effect(no_alloc, no_io, bounded)
+fn tag(seq:u32)->text { return concat("frame-",int_text(int(seq))); }
+fn main(){print tag(u32(7));}

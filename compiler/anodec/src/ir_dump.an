@@ -1,0 +1,36 @@
+pub fn header()->text { return "anode-bootstrap-ir 1"; }
+fn edge_list(edges:&ints)->text {
+    let mut parts=texts(); for i in 0..len(edges) { push(parts,int_text(at(edges,i))); } return text_join(parts,",");
+}
+pub fn summary(program:&crate::ast::Program,report:&crate::checker::Report)->text {
+    let mut lines=texts(); push(lines,header());
+    for i in 0..len(program.units) {
+        borrow unit=at(program.units,i) {
+            push(lines,concat("unit ",concat(int_text(i),concat(" ",concat(unit.name,concat(" nodes=",concat(int_text(len(unit.tree.nodes)),concat(" roots=",int_text(len(unit.tree.roots))))))))));
+        }
+    }
+    push(lines,concat("summary units=",concat(int_text(len(program.units)),concat(" symbols=",concat(int_text(len(report.symbols)),concat(" functions=",concat(int_text(report.functions),concat(" typed=",concat(int_text(len(report.types)),concat(" resolved=",concat(int_text(report.resolved),concat(" moves=",int_text(report.moves)))))))))))));
+    return text_join(lines,"\n");
+}
+pub fn render(program:&crate::ast::Program,report:&crate::checker::Report)->text {
+    let mut lines=texts(); push(lines,summary(&program,&report));
+    for unit in 0..len(program.units) {
+        borrow source=at(program.units,unit) {
+            for i in 0..len(source.tree.roots) {
+                let index=at(source.tree.roots,i); borrow ast_unit_1=at(program.units,unit) { borrow node=at(ast_unit_1.tree.nodes,index) {
+                if (node.kind>=2 && node.kind<=6) || node.kind==25 {
+                    let key=crate::ast::qualify(&source.name,&node.name);
+                    if node.kind==4 && node.flag>=2 { push(lines,concat("layout ",concat(key," columns"))); }
+                    push(lines,concat("decl ",concat(key,concat(" kind=",concat(int_text(node.kind),concat(" node=",crate::ast::node_key(unit,index)))))));
+                }
+            } } }
+            for index in 0..len(source.tree.nodes) {
+                borrow ast_unit_2=at(program.units,unit) { borrow node=at(ast_unit_2.tree.nodes,index) { let key=crate::ast::node_key(unit,index); let mut typ=clone(node.typ);
+                if contains_key(report.types,key) { typ=clone_get(report.types,key); }
+                let edges=edge_list(&node.children);
+                push(lines,concat("node ",concat(key,concat(" kind=",concat(int_text(node.kind),concat(" name=",concat(node.name,concat(" type=",concat(typ,concat(" edges=",concat(edges,concat(" byte=",int_text(node.pos)))))))))))));
+            } } }
+        }
+    }
+    return text_join(lines,"\n");
+}

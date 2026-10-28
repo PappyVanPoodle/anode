@@ -1,0 +1,26 @@
+pub fn run(count:int,fail:bool)->model::Result {
+    let mut nodes=model::Nodes();let mut handles=model::Links();let mut rows=metrics::model::Metrics();let mut scores=metrics::model::Scores();
+    for i in 0..count { let label=concat("doc-",int_text(i));let handle=alloc(nodes,model::Node{label:clone(label),score:i,links:model::Links()});push(handles,handle);push(rows,metrics::model::metric(label,i*2));push(scores,i); }
+    let snapshot=clone(nodes);
+    let mut total=0;
+    borrow mut window=region(scores,1,count-2) {
+        metrics::adjust(&mut window,2);let accepted=try metrics::interior(&mut window,3);assert accepted==count-2;
+        borrow inner=region(window,0,len(window)) { total=metrics::sum(&inner); }
+        replace(&mut window,0,17);swap(&mut window,0,len(window)-1);
+        borrow mut (left,right)=at_pair(window,0,len(window)-1) { left=left+3;right=right+5; }
+        for value in &window { total=total+value; }
+    }
+    borrow empty=region(scores,len(scores),0) { assert len(empty)==0; }
+    for row in &mut rows { row.score=row.score+1; }
+    let mut independent=clone(rows);borrow mut row=at(independent,0) { row.label="snapshot";row.score=100; }
+    let before=clone_at(rows,0);print before.label;assert before.score==1;
+    replace(rows,1,metrics::model::metric("replaced",29));
+    borrow mut row=at(rows,2) { row=metrics::model::metric("whole row",31); }
+    let removed=pop(independent);print removed.label;assert len(independent)==count-1;
+    for i in 0..count { let handle=at(handles,i);borrow row=at(rows,i) { borrow mut node=get(nodes,handle) { node.score=row.score; } }let saved=clone_get(snapshot,handle);assert saved.score==i; }
+    for handle in &handles { borrow node=get(nodes,handle) { total=total+node.score; } }
+    for i in 0..count { let handle=at(handles,i);let released=free(nodes,handle);assert released;let live=contains_id(nodes,handle);assert !live; }
+    assert len(nodes)==0;
+    if fail { let ignored=try metrics::checked(-1);total=total+ignored; }
+    return model::Result::Ready(total);
+}

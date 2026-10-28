@@ -1,0 +1,2 @@
+fixtures/negative/v100-loop-write.an:byte 82: mutation through shared borrow
+frontend rejected input

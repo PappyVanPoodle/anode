@@ -1,0 +1,2 @@
+fn read(value:&text,owned:text) {}
+fn main() { let value="owner";read(&value,value); }

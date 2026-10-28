@@ -1,0 +1,2 @@
+fixtures/negative/v120-effect-unbounded.an:byte 107: effect contract bounded violated in scan (including transitive calls)
+frontend rejected input

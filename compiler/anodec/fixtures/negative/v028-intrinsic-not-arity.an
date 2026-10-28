@@ -1,0 +1,1 @@
+fn main(){let value=bit_not(1,2);}

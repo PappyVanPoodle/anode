@@ -1,0 +1,18 @@
+// BEHAVIOR-EQUIVALENT 0.25 ORACLE. Windows use explicit indices and legacy ints start/end.
+struct Entry { name:text,weight:int }arena Entries(Entry);vector Handles(id(Entries));vector Names(text);vector West(int);vector East(int);
+struct Metric { label:text,score:int }soa vector Metrics(Metric);enum Checked{Value(int),Problem(text)}enum Result{Ready(int),Failed(text)}
+fn checked(value:int)->Checked { if value<0{return Checked::Problem("negative input");}return Checked::Value(value); }
+fn work(fail:bool)->Result {
+    let mut names=Names();push(names,"alpha");push(names,"beta");push(names,"gamma");push(names,"delta");
+    let mut entries=Entries();let h=alloc(entries,Entry{name:"catalog",weight:7});let mut handles=Handles();push(handles,h);
+    let mut left=West();push(left,10);push(left,20);push(left,30);let mut right=East();push(right,1);push(right,2);push(right,3);
+    let mut rows=Metrics();push(rows,Metric{label:"summary",score:0});let mut total=0;
+    for i in 1..3 { borrow mut name=at(names,i) { name=concat(name,"!"); } }replace(names,1,"changed");borrow final=at(names,2){total=len(final);}borrow mut (a,b)=at_pair(names,1,2){swap(a,b);}borrow value=at(names,1){print value;}
+    for name in &names { total=total+len(name); }for value in &left { total=total+value; }
+    let accepted=try checked(4);borrow mut middle=at(right,1){middle=middle+accepted;}for value in &right{total=total+value;}
+    borrow mut row=at(rows,0){row.score=total;row.label="scored";}let copy=clone(rows);borrow row=at(copy,0){print row.label;total=row.score;}
+    let values=[10,20,30,40];borrow legacy=region(values,1,3){assert len(legacy)==2;total=total+at(legacy,1);}
+    let word="café";borrow view=region(word,0,5){print to_text(view);}let saved=clone_get(entries,h);total=total+saved.weight;let freed=free(entries,h);assert freed;
+    if fail{let ignored=try checked(-1);total=total+ignored;}return Result::Ready(total);
+}
+fn main(){match work(false){Result::Ready(n)=>{print n;}Result::Failed(message)=>{print message;}}match work(true){Result::Ready(n)=>{print n;}Result::Failed(message)=>{print message;}}}

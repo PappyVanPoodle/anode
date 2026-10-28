@@ -1,0 +1,27 @@
+// BEHAVIOR-EQUIVALENT 0.25 ORACLE. It does not contain nominal-vector region syntax.
+struct Metric { label:text, score:int }soa vector Metrics(Metric);vector Scores(int);
+vector Links(id(Nodes));struct Node { label:text,score:int,links:Links }arena Nodes(Node);
+enum Checked { Value(int),Problem(text) }enum Result { Ready(int),Failed(text) }
+fn metric(label:text,score:int)->Metric { return Metric{label:label,score:score}; }
+fn checked(value:int)->Checked { if value<0 { return Checked::Problem("negative input"); }return Checked::Value(value); }
+fn run(count:int,fail:bool)->Result {
+    let mut nodes=Nodes();let mut handles=Links();let mut rows=Metrics();let mut scores=Scores();
+    for i in 0..count { let label=concat("doc-",int_text(i));let handle=alloc(nodes,Node{label:clone(label),score:i,links:Links()});push(handles,handle);push(rows,metric(label,i*2));push(scores,i); }
+    let snapshot=clone(nodes);let mut total=0;
+    for i in 1..count-1 { borrow mut value=at(scores,i) { value=value+2; } }
+    let accepted=try checked(3);for i in 2..count-2 { borrow mut value=at(scores,i) { value=value+accepted; } }
+    for i in 1..count-1 { total=total+at(scores,i); }
+    replace(scores,1,17);borrow mut (a,b)=at_pair(scores,1,count-2) { swap(a,b); }
+    borrow mut (left,right)=at_pair(scores,1,count-2) { left=left+3;right=right+5; }
+    for i in 1..count-1 { total=total+at(scores,i); }
+    for row in &mut rows { row.score=row.score+1; }
+    let mut independent=clone(rows);borrow mut row=at(independent,0) { row.label="snapshot";row.score=100; }
+    let before=clone_at(rows,0);print before.label;assert before.score==1;
+    replace(rows,1,metric("replaced",29));borrow mut row=at(rows,2) { row=metric("whole row",31); }
+    let removed=pop(independent);print removed.label;assert len(independent)==count-1;
+    for i in 0..count { let handle=at(handles,i);borrow row=at(rows,i) { borrow mut node=get(nodes,handle) { node.score=row.score; } }let saved=clone_get(snapshot,handle);assert saved.score==i; }
+    for handle in &handles { borrow node=get(nodes,handle) { total=total+node.score; } }
+    for i in 0..count { let handle=at(handles,i);let released=free(nodes,handle);assert released;let live=contains_id(nodes,handle);assert !live; }
+    assert len(nodes)==0;if fail { let ignored=try checked(-1);total=total+ignored; }return Result::Ready(total);
+}
+fn main() { let mut count=8;if args_count()>0 { count=parse_int(arg(0)); }assert count>=4 && count<=64;match run(count,false){Result::Ready(score)=>{print score;}Result::Failed(message)=>{print message;}}match run(count,true){Result::Ready(score)=>{print score;}Result::Failed(message)=>{print message;}} }

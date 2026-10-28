@@ -1,0 +1,2 @@
+fixtures/negative/v028-intrinsic-second-reference.an:byte 47: type mismatch: expected int, got &int
+frontend rejected input

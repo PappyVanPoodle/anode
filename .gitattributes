@@ -2,3 +2,7 @@
 # Windows line endings on every checkout.
 compiler/src/runtime.h text eol=crlf
 compiler/src/runtime.c text eol=crlf
+
+# anodec's tests compare generated text with fixtures byte for byte (some
+# fixtures are LF, some CRLF); store and check out these files unchanged.
+compiler/anodec/** -text

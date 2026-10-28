@@ -1,0 +1,37 @@
+mod model;
+mod ops;
+fn main() {
+    let mut count=16;if args_count()>0 { count=parse_int(arg(0)); }assert count>=0 && count<=512;
+    let mut packets=model::Packets();let mut table=model::Table();let mut total=0;
+    for number in 0..count {
+        let label=concat("é-",int_text(number));
+        let item=model::packet(number,clone(label));
+        insert(table,label,clone(item));push(packets,item);
+        let event=model::select(number);
+        match event { model::Event::Ready(packet)=>{total=total+packet.score();} _=>{} }
+    }
+    for item in &mut packets { ops::alter(&mut item,2); }
+    for item in &packets { total=total+item.score(); }
+    if count>0 {
+        let key="é-0";let found=ops::lookup(&table,&key);let found_score=ops::inspect(&found);assert found_score==1;
+        borrow mut first=at(packets,0) { first.label="changed"; }
+        borrow first=at(packets,0) { print first.label; }
+        let mut independent=clone(packets);let mut last=pop(independent);ops::alter(&mut last,10);
+        assert len(independent)==count-1;assert len(packets)==count;
+        let mut extracted=ops::early(3);let label=extracted.label;print label;
+        extracted.label="restored";let restored=clone(extracted);print restored.label;
+        let removed=remove(table,key);assert removed;
+        insert(table,"replacement",last);
+        let table_copy=clone(table);let replacement="replacement";let kept=ops::lookup(&table_copy,&replacement);print kept.score();
+    }
+    let mut changed=model::Event::Ready(model::packet(1,"mutable"));
+    match &mut changed { model::Event::Ready(payload)=>{ops::alter(&mut payload,5);} _=>{} }
+    match &changed { model::Event::Ready(payload)=>{total=total+payload.score();} _=>{} }
+    let view_source="café";borrow view=region(view_source,0,5) { let own=to_text(view);print own; }
+    let words=split("one:two:three",":");let joined=text_join(words,"/");print joined;
+    let values=[1,2,3];assert at(values,1)==2;
+    let mut flag=model::packet(0,"short");let first=false && ops::short_circuit(&mut flag);let second=true || ops::short_circuit(&mut flag);assert !first && second && len(flag.numbers)==2;
+    let numeric=f64(count)/2.0;let converted=int(numeric);print converted;
+    print ops::while_flow(count);print total;print len(table);
+    for number in 0..count { let ignored=ops::early(number%12); }
+}

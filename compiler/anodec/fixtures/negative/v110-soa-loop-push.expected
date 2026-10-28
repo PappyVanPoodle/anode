@@ -1,0 +1,2 @@
+fixtures/negative/v110-soa-loop-push.an:byte 117: mutation while scoped loan is active: rows
+frontend rejected input

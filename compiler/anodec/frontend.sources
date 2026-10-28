@@ -1,0 +1,7 @@
+src/lexer.an
+src/ast.an
+src/parser.an
+src/checker.an
+src/ir_dump.an
+src/cgen.an
+src/main.an

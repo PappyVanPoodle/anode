@@ -1,0 +1,4 @@
+arena Values(text);
+fn change(values:&mut Values,handle:id(Values))->int{let removed=free(values,handle);return 1;}
+fn inspect(values:&Values,n:int){}
+fn main(){let mut values=Values();let h=alloc(values,"owned");inspect(&values,change(&mut values,h));}

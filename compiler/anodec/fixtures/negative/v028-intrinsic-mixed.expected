@@ -1,0 +1,2 @@
+fixtures/negative/v028-intrinsic-mixed.an:byte 27: type mismatch: expected u8, got int
+frontend rejected input

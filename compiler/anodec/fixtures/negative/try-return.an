@@ -1,0 +1,3 @@
+enum Outcome{Ok(int),Err(text)}
+fn work(value:Outcome)->int{return try value;}
+fn main(){}

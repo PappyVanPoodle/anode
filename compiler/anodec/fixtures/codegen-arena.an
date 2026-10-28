@@ -1,0 +1,31 @@
+struct Node { label:text, edges:Links }
+vector Links(id(Nodes));
+arena Nodes(Node);
+map ById(id(Nodes),int);
+fn main() {
+    let mut nodes=Nodes(); let mut links=Links();
+    let first=alloc(nodes,Node{label:"first",edges:Links()}); push(links,first);
+    let second=alloc(nodes,Node{label:"second",edges:links});
+    let copied=first; assert copied==first; assert first!=second; assert len(nodes)==2;
+    let mut index=ById(); insert(index,first,7); assert clone_get(index,copied)==7;
+    let mut snapshot=clone(nodes);
+    borrow mut row=get(nodes,first) { row.label="changed"; }
+    let detached=clone_get(nodes,second); assert len(detached.edges)==1;
+    let edge=clone_at(detached.edges,0); assert edge==first;
+    let freed=free(nodes,first); assert freed; assert !contains_id(nodes,copied);
+    let twice=free(nodes,first); assert !twice;
+    let replacement=alloc(nodes,Node{label:"replacement",edges:Links()}); assert replacement!=first;
+    assert !contains_id(nodes,first); assert contains_id(snapshot,first);
+    borrow old=get(snapshot,first) { print old.label; }
+    borrow fresh=get(nodes,replacement) { print fresh.label; }
+    let detached_first=clone_get(snapshot,first); print detached_first.label;
+    let mut another=Nodes(); let other_id=alloc(another,Node{label:"other instance",edges:Links()});
+    assert other_id==first; assert contains_id(another,first); assert !contains_id(nodes,other_id);
+    borrow relative=get(another,first) { print relative.label; }
+    let mut reuse=Nodes();let left=alloc(reuse,Node{label:"left",edges:Links()});let right=alloc(reuse,Node{label:"right",edges:Links()});
+    let freed_left=free(reuse,left);let freed_right=free(reuse,right);let lifo=alloc(reuse,Node{label:"lifo",edges:Links()});
+    let mut control=Nodes();let retained=alloc(control,Node{label:"retained",edges:Links()});let control_right=alloc(control,Node{label:"right",edges:Links()});
+    let removed_right=free(control,control_right);let expected=alloc(control,Node{label:"expected",edges:Links()});assert lifo==expected;
+    let removed=free(snapshot,second); assert removed;
+    print len(nodes); print len(snapshot); print clone_get(index,first);
+}

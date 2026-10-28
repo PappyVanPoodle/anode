@@ -1,0 +1,2 @@
+fixtures/negative/v028-intrinsic-count.an:byte 23: type mismatch: expected int, got u8
+frontend rejected input

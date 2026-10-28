@@ -1,0 +1,3 @@
+fixtures/negative/v100-span-push.an:byte 77: cannot resize scoped vector span
+fixtures/negative/v100-span-push.an:byte 78: mutation while scoped loan is active: values
+frontend rejected input

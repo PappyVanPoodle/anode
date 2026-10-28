@@ -1,0 +1,1 @@
+fn main(){let value=shl(u8(1),u8(2));}

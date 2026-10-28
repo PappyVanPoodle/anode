@@ -1,6 +1,6 @@
 # Anode compiler source
 
-This folder is the Rust source of the Anode 1.3.0 compiler (`zn` / `anode`) and of its language server (`tools/anode-lsp`). The prebuilt SDK in [Releases](https://github.com/PappyVanPoodle/anode/releases/latest) contains the same binaries.
+This folder is the Rust source of the Anode 1.3.0 compiler (`zn` / `anode`) and of its language server (`tools/anode-lsp`), plus the Anode source of `anodec` (`anodec/`). The prebuilt SDK in [Releases](https://github.com/PappyVanPoodle/anode/releases/latest) contains the same binaries.
 
 ## Build
 
@@ -30,6 +30,7 @@ cargo build --release
 | `src/verify.rs`, `src/holes.rs` | Contract sampling and `??` hole campaigns |
 | `src/main.rs` | The `anode` command line |
 | `tools/anode-lsp/` | Language server |
+| `anodec/` | `anodec`, a second compiler written in Anode that builds itself; see [anodec/README.md](anodec/README.md) |
 
 The compiler's test suite and release measurements are not included here; they depend on files outside this folder.
 

@@ -1,0 +1,2 @@
+fixtures/negative/v026-move.an:byte 95: owner accessed while scoped loan is active: v
+frontend rejected input

@@ -1,0 +1,2 @@
+fixtures/negative/v026-soa-region.an:byte 84: SoA rows are noncontiguous; region requires contiguous nominal vector
+frontend rejected input

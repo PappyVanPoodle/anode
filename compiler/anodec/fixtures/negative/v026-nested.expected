@@ -1,0 +1,3 @@
+fixtures/negative/v026-nested.an:byte 124: owner accessed while scoped loan is active: window
+fixtures/negative/v026-nested.an:byte 124: mutation while scoped loan is active: window
+frontend rejected input

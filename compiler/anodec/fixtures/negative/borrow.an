@@ -1,0 +1,5 @@
+map Values(text,int);
+fn main() {
+    let mut values=Values(); insert(values,"a",1);
+    borrow value=get(values,"a") { insert(values,"b",2); }
+}

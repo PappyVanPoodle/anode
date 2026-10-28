@@ -1,0 +1,1 @@
+vector V(int);fn grow(v:&mut [V]){push(v,1);}fn main(){}

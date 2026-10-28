@@ -1,0 +1,8 @@
+[package]
+name = "bootstrap-stage1-fixture"
+version = "0.1.0"
+[capabilities]
+process_args = true
+file_read = false
+file_write = false
+threads = false

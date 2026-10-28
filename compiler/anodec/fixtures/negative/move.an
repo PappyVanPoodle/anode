@@ -1,0 +1,2 @@
+fn consume(value:text) {}
+fn main() { let value="owner"; consume(value); print value; }

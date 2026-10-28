@@ -1,0 +1,5 @@
+pub struct Entry { name:text, weight:int }
+pub arena Entries(Entry);
+pub vector Handles(id(Entries));
+pub vector Names(text);
+pub enum Result { Ready(int),Failed(text) }

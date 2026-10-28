@@ -1,0 +1,156 @@
+// Every recursive edge is an integer into Nodes. No recursive owned type.
+pub struct Node { kind:int, name:text, typ:text, pos:int, flag:int, children:ints }
+pub vector Nodes(Node);
+pub struct Tree { nodes:Nodes, roots:ints, error:text, error_at:int, lines:ints }
+pub struct Unit { name:text, path:text, tree:Tree }
+pub vector Units(Unit);
+pub map Modules(text,int);
+pub struct Program { units:Units, modules:Modules }
+// The index contains exact module names only; all declaration and body checks still run.
+pub fn program(units:Units)->Program {
+    let mut modules=Modules();
+    for source in &units { insert(modules,clone(source.name),1); }
+    return Program{units:units,modules:modules};
+}
+pub enum Outcome { Ready(int), Failed(text) }
+
+impl Node {
+    pub fn child_count(self:&Self)->int { return len(self.children); }
+}
+pub fn node(kind:int,name:text,typ:text,pos:int,flag:int,children:ints)->Node {
+    return Node{kind:kind,name:name,typ:typ,pos:pos,flag:flag,children:children};
+}
+pub fn empty()->Tree { return Tree{nodes:Nodes(),roots:[],error:"",error_at:0,lines:[]}; }
+// v1.4 --debug: byte offsets where each source line starts, so C lowering can
+// map a node's UTF-8 byte position to a 1-based `#line` without the source.
+pub fn line_starts(source:&text)->ints {
+    let mut starts=[]; push(starts,0);
+    for i in 0..len(source) { if byte_at(source,i)==10 { push(starts,i+1); } }
+    return starts;
+}
+pub fn line_of(starts:&ints,pos:int)->int {
+    let mut low=0; let mut high=len(starts);
+    while high-low>1 { let middle=(low+high)/2; if at(starts,middle)<=pos { low=middle; } else { high=middle; } }
+    return low+1;
+}
+pub fn get(program:&Program,unit:int,index:int)->Node {
+    borrow source=at(program.units,unit) { return clone_at(source.tree.nodes,index); }
+}
+pub fn module_name(program:&Program,unit:int)->text {
+    borrow source=at(program.units,unit) { return clone(source.name); }
+}
+pub fn path(program:&Program,unit:int)->text {
+    borrow source=at(program.units,unit) { return clone(source.path); }
+}
+pub fn key(module:&text,name:&text)->text { return concat(module,concat("::",name)); }
+pub fn node_key(unit:int,index:int)->text { return concat(int_text(unit),concat(":",int_text(index))); }
+pub fn base(typ:&text)->text {
+    if text_starts_with(typ,"&mut ") { return slice(typ,5,len(typ)); }
+    if text_starts_with(typ,"&") { return slice(typ,1,len(typ)); }
+    return clone(typ);
+}
+pub fn primitive(typ:&text)->bool {
+    return text_eq(typ,"int") || text_eq(typ,"bool") || text_eq(typ,"text") || text_eq(typ,"str")
+        || text_eq(typ,"ints") || text_eq(typ,"texts") || text_eq(typ,"f64") || text_eq(typ,"f32")
+        || text_eq(typ,"unit") || text_eq(typ,"i8") || text_eq(typ,"i16") || text_eq(typ,"i32")
+        || text_eq(typ,"i64") || text_eq(typ,"u8") || text_eq(typ,"u16") || text_eq(typ,"u32") || text_eq(typ,"u64");
+}
+pub fn is_id(typ:&text)->bool { return text_starts_with(typ,"id(") && text_ends_with(typ,")"); }
+pub fn id_owner(typ:&text)->text { return slice(typ,3,len(typ)-1); }
+pub fn is_span(typ:&text)->bool { return text_starts_with(typ,"[") && text_ends_with(typ,"]") && !contains(typ,";"); }
+pub fn span_owner(typ:&text)->text { return slice(typ,1,len(typ)-1); }
+// v1.2 fixed integer arrays `[T;N]`: inline owners, never spans or collections.
+pub fn is_fixed(typ:&text)->bool { return text_starts_with(typ,"[") && text_ends_with(typ,"]") && contains(typ,";"); }
+pub fn fixed_element(typ:&text)->text {
+    for i in 0..len(typ) { if byte_at(typ,i)==59 { return slice(typ,1,i); } }
+    return "?";
+}
+pub fn fixed_length(typ:&text)->int {
+    for i in 0..len(typ) { if byte_at(typ,i)==59 { let digits=slice(typ,i+1,len(typ)-1); if is_int(digits) { return parse_int(digits); } } }
+    return -1;
+}
+pub fn canonical_fixed(typ:&text)->text {
+    let mut element=fixed_element(&typ); if text_eq(element,"i64") { element="int"; }
+    return concat("[",concat(element,concat(";",concat(int_text(fixed_length(&typ)),"]"))));
+}
+// Built-in result types, like ReadResult: never resolved against user modules.
+pub fn builtin_type(typ:&text)->bool { return text_eq(typ,"ReadResult") || text_eq(typ,"ProcessRun") || text_eq(typ,"ProcessOutput"); }
+pub fn collection(typ:&text)->text { let base=base(&typ); if is_span(&base) { return span_owner(&base); } return base; }
+pub fn owned(typ:&text)->bool {
+    let value=base(&typ);
+    return !is_span(&value) && !is_id(&value) && (text_eq(value,"text") || text_eq(value,"ints") || text_eq(value,"texts") || !primitive(&value));
+}
+pub fn strip_crate(name:&text)->text {
+    if text_starts_with(name,"crate::") { return slice(name,7,len(name)); }
+    return clone(name);
+}
+pub fn package_prefix(module:&text)->text {
+    for i in 0..len(module) { if byte_at(module,i)==58 { return slice(module,0,i+2); } }
+    return "";
+}
+pub fn sibling(module:&text,name:&text)->text { return concat(package_prefix(&module),name); }
+pub fn qualify(module:&text,name:&text)->text {
+    let clean=strip_crate(&name);
+    if text_starts_with(name,"crate::") { return sibling(&module,&clean); }
+    if contains(clean,"::") && len(clean)>0 {
+        let first=byte_at(clean,0);
+        if first<65 || first>90 { return clean; }
+    }
+    return key(&module,&clean);
+}
+pub fn resolve(program:&Program,module:&text,name:&text)->text {
+    let resolved=qualify(&module,&name); let parts=split(resolved,"::");
+    if len(parts)==2 { let alias=text_at(parts,0); let value=text_at(parts,1);let library=concat(alias,"::lib");let entry=concat(alias,"::main");let mut root="";
+        if contains_key(program.modules,library) { root=clone(library); }
+        else if contains_key(program.modules,entry) { root=clone(entry); }
+        if len(root)>0 { return key(&root,&value); }
+    }
+    // v1.4: alias::Enum::Variant and alias::Type::method reach the package
+    // entry too, unless alias::<second> already names one of its modules.
+    if len(parts)>2 { let alias=text_at(parts,0); let inner=text_at(parts,1); let second=key(&alias,&inner);let library=concat(clone(alias),"::lib");let entry=concat(clone(alias),"::main");let mut root="";
+        if contains_key(program.modules,library) { root=clone(library); }
+        else if contains_key(program.modules,entry) { root=clone(entry); }
+        let rest=slice(resolved,len(alias)+2,len(resolved));
+        if len(root)>0 && !contains_key(program.modules,second) { return key(&root,&rest); }
+    }
+    return resolved;
+}
+pub fn filename(path:&text)->text {
+    let mut start=0;
+    for i in 0..len(path) {
+        let c=byte_at(path,i); if c==47 || c==92 { start=i+1; }
+    }
+    let mut end=len(path);
+    for i in start..len(path) { if byte_at(path,i)==46 { end=i; break; } }
+    return slice(path,start,end);
+}
+pub fn directory(path:&text)->text {
+    let mut end=0;
+    for i in 0..len(path) { let c=byte_at(path,i); if c==47 || c==92 { end=i+1; } }
+    return slice(path,0,end);
+}
+
+test finite_nodes_and_methods() {
+    let value=node(31,"7","int",0,0,[]);
+    let count=value.child_count(); assert count==0;
+    let typ="&mut ast::Node"; let normalized=base(&typ); let expected="ast::Node";
+    assert text_eq(normalized,expected);
+    let name=filename(&expected); assert len(name)>0;
+    let status=Outcome::Ready(2);
+    match &status { Outcome::Ready(n)=>{assert n==2;} _=>{assert false;} }
+}
+test ids_are_nonowning_nominal_edges() {
+    let typ="id(model::Nodes)"; let copyable=!owned(&typ); assert copyable;
+    let owner=id_owner(&typ); let expected="model::Nodes"; assert text_eq(owner,expected);
+    let reference="&id(model::Nodes)"; let borrowed=!owned(&reference); assert borrowed;
+}
+
+test spans_are_nonowning_and_package_crate_is_relative() {
+    let borrowed="&mut [metrics::model::Scores]";let base=base(&borrowed);let span=is_span(&base);let owning=owned(&borrowed);assert span;assert !owning;let owner=collection(&borrowed);let expected="metrics::model::Scores";assert text_eq(owner,expected);let module="metrics::lib";let name="crate::model::Scores";let actual=qualify(&module,&name);assert text_eq(actual,expected);
+}
+test fixed_arrays_are_inline_owners_not_spans() {
+    let typ="[u8;016]";let fixed=is_fixed(&typ);let span=is_span(&typ);let owner=owned(&typ);let count=fixed_length(&typ);let element=fixed_element(&typ);let canonical=canonical_fixed(&typ);let expected="[u8;16]";let byte="u8";
+    assert fixed && !span && owner && count==16;assert text_eq(canonical,expected);assert text_eq(element,byte);
+    let nominal_span="[Values]";let nominal=is_fixed(&nominal_span);let window=is_span(&nominal_span);assert !nominal && window;
+    let process="ProcessRun";let builtin=builtin_type(&process);assert builtin;
+}

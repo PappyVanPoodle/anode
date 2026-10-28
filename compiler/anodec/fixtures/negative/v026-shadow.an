@@ -1,0 +1,1 @@
+fn region(value:int,start:int,count:int)->int{return value;}fn main(){let value=1;borrow window=region(value,0,1){print window;}}

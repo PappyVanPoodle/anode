@@ -1,0 +1,341 @@
+// Recursive-descent statements plus Pratt expressions; all edges are indices.
+struct Parser { tokens:crate::lexer::Tokens, tree:crate::ast::Tree, cursor:int, depth:int, owner:text }
+fn peek(p:&Parser,value:text)->bool { return crate::lexer::is(&p.tokens,p.cursor,value); }
+fn kind(p:&Parser)->int { borrow token=at(p.tokens.entries,p.cursor) { return token.kind; } }
+fn position(p:&Parser)->int { borrow token=at(p.tokens.entries,p.cursor) { return token.start; } }
+fn error(p:&mut Parser,message:text) {
+    if len(p.tree.error)==0 { let at=position(&p); p.tree.error_at=at; p.tree.error=message; }
+}
+fn eat(p:&mut Parser,value:text)->bool {
+    if peek(&p,value) { p.cursor=p.cursor+1; return true; } return false;
+}
+fn expect(p:&mut Parser,value:text) {
+    if !eat(&mut p,clone(value)) { error(&mut p,concat("expected ",value)); }
+}
+fn reserved(name:&text)->bool {
+    return text_eq(name,"fn") || text_eq(name,"test") || text_eq(name,"let") || text_eq(name,"mut")
+        || text_eq(name,"if") || text_eq(name,"else") || text_eq(name,"while") || text_eq(name,"for")
+        || text_eq(name,"in") || text_eq(name,"return") || text_eq(name,"print") || text_eq(name,"assert")
+        || text_eq(name,"struct") || text_eq(name,"enum") || text_eq(name,"mod") || text_eq(name,"pub")
+        || text_eq(name,"vector") || text_eq(name,"map") || text_eq(name,"impl") || text_eq(name,"match")
+        || text_eq(name,"borrow") || text_eq(name,"break") || text_eq(name,"continue") || text_eq(name,"spawn")
+        || text_eq(name,"requires") || text_eq(name,"ensures") || text_eq(name,"result")
+        || text_eq(name,"soa") || text_eq(name,"arena") || text_eq(name,"try") || text_eq(name,"true") || text_eq(name,"false");
+}
+fn word(p:&mut Parser)->text {
+    if kind(&p)!=1 { error(&mut p,"expected identifier"); return "?"; }
+    let name=crate::lexer::spelling(&p.tokens,p.cursor);
+    if reserved(&name) { error(&mut p,"reserved identifier or unsupported construct"); }
+    p.cursor=p.cursor+1; return name;
+}
+fn path(p:&mut Parser)->text {
+    let mut name=word(&mut p);
+    while eat(&mut p,"::") { let part=word(&mut p); name=concat(name,concat("::",part)); }
+    return name;
+}
+fn datatype(p:&mut Parser)->text {
+    let mut prefix="";
+    if eat(&mut p,"&") { prefix="&"; if eat(&mut p,"mut") { prefix="&mut "; } }
+    let span=eat(&mut p,"[");
+    let mut name=path(&mut p);
+    if span && eat(&mut p,";") {
+        let count=fixed_count(&mut p); expect(&mut p,"]"); name=concat("[",concat(name,concat(";",concat(count,"]"))));
+    } else if span { expect(&mut p,"]"); name=concat("[",concat(name,"]")); }
+    if text_eq(name,"Self") {
+        if len(p.owner)==0 { error(&mut p,"Self outside impl"); }
+        name=clone(p.owner);
+    }
+    if text_eq(name,"id") { expect(&mut p,"("); let owner=path(&mut p); expect(&mut p,")"); name=concat("id(",concat(owner,")")); }
+    return concat(prefix,name);
+}
+// v1.2: `[T;N]` and `[value;N]` lengths are decimal literals (range-checked by the checker).
+fn fixed_count(p:&mut Parser)->text {
+    if kind(&p)!=2 { error(&mut p,"fixed array length must be a decimal literal"); return "0"; }
+    let count=crate::lexer::spelling(&p.tokens,p.cursor); p.cursor=p.cursor+1; return count;
+}
+fn emit(p:&mut Parser,kind:int,name:text,typ:text,pos:int,flag:int,children:ints)->int {
+    let index=len(p.tree.nodes); push(p.tree.nodes,crate::ast::node(kind,name,typ,pos,flag,children)); return index;
+}
+fn enter(p:&mut Parser)->bool {
+    if p.depth>=96 { error(&mut p,"syntax nesting exceeds 96"); return false; }
+    p.depth=p.depth+1; return true;
+}
+fn capital(name:&text)->bool {
+    let mut start=0;
+    for i in 0..len(name) { if byte_at(name,i)==58 { start=i+1; } }
+    if start>=len(name) { return false; }
+    let c=byte_at(name,start); return c>=65 && c<=90;
+}
+fn priority(op:&text)->int {
+    if text_eq(op,"..") { return 1; }
+    if text_eq(op,"||") { return 2; }
+    if text_eq(op,"&&") { return 3; }
+    if text_eq(op,"==") || text_eq(op,"!=") { return 4; }
+    if text_eq(op,"<") || text_eq(op,"<=") || text_eq(op,">") || text_eq(op,">=") { return 5; }
+    if text_eq(op,"+") || text_eq(op,"-") { return 6; }
+    if text_eq(op,"*") || text_eq(op,"/") || text_eq(op,"%") { return 7; }
+    return 0;
+}
+fn atom(p:&mut Parser)->int {
+    let pos=position(&p); let category=kind(&p);
+    if eat(&mut p,"(") { let value=expression(&mut p,0); expect(&mut p,")"); return value; }
+    if peek(&p,"!") || peek(&p,"-") || peek(&p,"&") {
+        let mut op=crate::lexer::spelling(&p.tokens,p.cursor); p.cursor=p.cursor+1;
+        if text_eq(op,"&") && eat(&mut p,"mut") { op="&mut"; }
+        let value=expression(&mut p,8); return emit(&mut p,38,op,"",pos,0,[value]);
+    }
+    if eat(&mut p,"try") { let value=expression(&mut p,8); return emit(&mut p,43,"try","",pos,0,[value]); }
+    if eat(&mut p,"[") {
+        let mut items=[]; let mut repeat="";
+        while !peek(&p,"]") && len(p.tree.error)==0 {
+            let item=expression(&mut p,0); push(items,item);
+            if len(items)==1 && eat(&mut p,";") { repeat=fixed_count(&mut p); break; }
+            if !eat(&mut p,",") { break; }
+        }
+        expect(&mut p,"]");
+        if len(repeat)>0 { return emit(&mut p,44,repeat,"",pos,0,items); }
+        return emit(&mut p,42,"","",pos,0,items);
+    }
+    if category==2 || category==3 || category==5 {
+        let spelling=crate::lexer::spelling(&p.tokens,p.cursor); p.cursor=p.cursor+1;
+        let mut tag=31; if category==3 { tag=32; } else if category==5 { tag=34; }
+        return emit(&mut p,tag,spelling,"",pos,0,[]);
+    }
+    if peek(&p,"true") || peek(&p,"false") {
+        let spelling=crate::lexer::spelling(&p.tokens,p.cursor); p.cursor=p.cursor+1;
+        return emit(&mut p,33,spelling,"",pos,0,[]);
+    }
+    if category==1 {
+        let name=path(&mut p);
+        if capital(&name) && eat(&mut p,"{") {
+            let mut fields=[];
+            while !peek(&p,"}") && len(p.tree.error)==0 {
+                let at=position(&p); let field=word(&mut p); expect(&mut p,":");
+                let value=expression(&mut p,0); let entry=emit(&mut p,41,field,"",at,0,[value]); push(fields,entry);
+                if !eat(&mut p,",") { break; }
+            }
+            expect(&mut p,"}"); return emit(&mut p,40,name,"",pos,0,fields);
+        }
+        return emit(&mut p,30,name,"",pos,0,[]);
+    }
+    error(&mut p,"expected expression; construct is outside the subset"); return -1;
+}
+fn expression(p:&mut Parser,minimum:int)->int {
+    if !enter(&mut p) { return -1; }
+    let mut left=atom(&mut p);
+    while len(p.tree.error)==0 {
+        let pos=position(&p);
+        if eat(&mut p,"(") {
+            let mut args=[left];
+            while !peek(&p,")") && len(p.tree.error)==0 {
+                let value=expression(&mut p,0); push(args,value); if !eat(&mut p,",") { break; }
+            }
+            expect(&mut p,")"); left=emit(&mut p,35,"","",pos,0,args); continue;
+        }
+        if eat(&mut p,".") {
+            let name=word(&mut p); left=emit(&mut p,36,name,"",pos,0,[left]); continue;
+        }
+        let op=crate::lexer::spelling(&p.tokens,p.cursor); let level=priority(&op);
+        if level==0 || level<minimum { break; }
+        p.cursor=p.cursor+1; let right=expression(&mut p,level+1);
+        left=emit(&mut p,39,op,"",pos,0,[left,right]);
+    }
+    p.depth=p.depth-1; return left;
+}
+fn block(p:&mut Parser)->int {
+    let pos=position(&p);
+    if !enter(&mut p) { return -1; }
+    expect(&mut p,"{"); let mut statements=[];
+    while !peek(&p,"}") && kind(&p)!=0 && len(p.tree.error)==0 {
+        let value=statement(&mut p); push(statements,value);
+    }
+    expect(&mut p,"}"); p.depth=p.depth-1; return emit(&mut p,10,"","",pos,0,statements);
+}
+fn conditional(p:&mut Parser,pos:int)->int {
+    if !enter(&mut p) { return -1; }
+    let condition=expression(&mut p,0); let yes=block(&mut p); let mut children=[condition,yes];
+    if eat(&mut p,"else") {
+        let at=position(&p); let mut no=-1;
+        if eat(&mut p,"if") { no=conditional(&mut p,at); }
+        else { no=block(&mut p); }
+        push(children,no);
+    }
+    p.depth=p.depth-1; return emit(&mut p,16,"","",pos,0,children);
+}
+fn statement(p:&mut Parser)->int {
+    let pos=position(&p);
+    if peek(&p,"{") { return block(&mut p); }
+    if eat(&mut p,"let") {
+        let mut flag=0; if eat(&mut p,"mut") { flag=1; }
+        let name=word(&mut p); let mut typ=""; if eat(&mut p,":") { typ=datatype(&mut p); }
+        expect(&mut p,"="); let value=expression(&mut p,0); expect(&mut p,";");
+        return emit(&mut p,11,name,typ,pos,flag,[value]);
+    }
+    if eat(&mut p,"return") {
+        let mut values=[];
+        if !peek(&p,";") { let value=expression(&mut p,0); push(values,value); }
+        expect(&mut p,";"); return emit(&mut p,13,"","",pos,0,values);
+    }
+    if eat(&mut p,"print") { let value=expression(&mut p,0); expect(&mut p,";"); return emit(&mut p,14,"","",pos,0,[value]); }
+    if eat(&mut p,"assert") { let value=expression(&mut p,0); expect(&mut p,";"); return emit(&mut p,15,"","",pos,0,[value]); }
+    if eat(&mut p,"if") { return conditional(&mut p,pos); }
+    if eat(&mut p,"while") {
+        let condition=expression(&mut p,0); let body=block(&mut p); return emit(&mut p,17,"","",pos,0,[condition,body]);
+    }
+    if eat(&mut p,"for") {
+        let name=word(&mut p); expect(&mut p,"in"); let value=expression(&mut p,0);
+        let body=block(&mut p); return emit(&mut p,18,name,"",pos,0,[value,body]);
+    }
+    if eat(&mut p,"borrow") {
+        let mut flag=0; if eat(&mut p,"mut") { flag=1; }
+        let mut name="";
+        if eat(&mut p,"(") { let first=word(&mut p); expect(&mut p,","); let second=word(&mut p); expect(&mut p,")"); name=concat(first,concat(",",second)); }
+        else { name=word(&mut p); }
+        expect(&mut p,"="); let value=expression(&mut p,0);
+        let body=block(&mut p); return emit(&mut p,19,name,"",pos,flag,[value,body]);
+    }
+    if eat(&mut p,"match") {
+        let value=expression(&mut p,0); expect(&mut p,"{"); let mut children=[value];
+        while !peek(&p,"}") && len(p.tree.error)==0 {
+            let at=position(&p); let name=path(&mut p); let mut binding="";
+            if eat(&mut p,"(") { binding=word(&mut p); expect(&mut p,")"); }
+            expect(&mut p,"=>"); let body=block(&mut p);
+            let arm=emit(&mut p,21,name,binding,at,0,[body]); push(children,arm);
+            let ignored=eat(&mut p,",");
+        }
+        expect(&mut p,"}"); return emit(&mut p,20,"","",pos,0,children);
+    }
+    if eat(&mut p,"break") { expect(&mut p,";"); return emit(&mut p,23,"","",pos,0,[]); }
+    if eat(&mut p,"continue") { expect(&mut p,";"); return emit(&mut p,24,"","",pos,0,[]); }
+    let left=expression(&mut p,0);
+    if eat(&mut p,"=") {
+        let right=expression(&mut p,0); expect(&mut p,";"); return emit(&mut p,12,"","",pos,0,[left,right]);
+    }
+    expect(&mut p,";"); return emit(&mut p,22,"","",pos,0,[left]);
+}
+fn function(p:&mut Parser,flag:int,is_test:bool)->int {
+    let pos=position(&p); let mut name=word(&mut p);
+    if len(p.owner)>0 { name=concat(p.owner,concat("::",name)); }
+    expect(&mut p,"("); let mut parameters=[];
+    while !peek(&p,")") && len(p.tree.error)==0 {
+        let at=position(&p); let mut mutable=0; if eat(&mut p,"mut") { mutable=1; }
+        let parameter=word(&mut p); expect(&mut p,":"); let typ=datatype(&mut p);
+        let entry=emit(&mut p,7,parameter,typ,at,mutable,[]); push(parameters,entry);
+        if !eat(&mut p,",") { break; }
+    }
+    expect(&mut p,")"); let mut return_name="unit"; if eat(&mut p,"->") { return_name=datatype(&mut p); }
+    let body=block(&mut p); push(parameters,body);
+    let mut visibility=flag; if is_test { visibility=2; }
+    return emit(&mut p,6,name,return_name,pos,visibility,parameters);
+}
+// v1.2 function annotations, spelled and validated as in the Rust parser:
+// repeated @effect(no_alloc|no_io|bounded, ...) and @intent("text") before
+// [pub] fn/test. Node 26 records the effects in declared order (name), their
+// bit set (flag: no_alloc 1, no_io 2, bounded 4) and the annotated function.
+@effect(no_io, bounded)
+fn effect_bit(name:&text)->int {
+    if text_eq(name,"no_alloc") { return 1; } if text_eq(name,"no_io") { return 2; } if text_eq(name,"bounded") { return 4; } return 0;
+}
+fn annotated(p:&mut Parser,pos:int,inside_impl:bool)->int {
+    let mut names=""; let mut mask=0;
+    while len(p.tree.error)==0 && eat(&mut p,"@") {
+        let annotation=word(&mut p); expect(&mut p,"(");
+        if text_eq(annotation,"effect") {
+            while len(p.tree.error)==0 {
+                let effect=word(&mut p); let bit=effect_bit(&effect);
+                if bit==0 { error(&mut p,"supported effects: no_alloc, no_io, bounded"); }
+                else if (mask/bit)%2==1 { error(&mut p,"duplicate effect contract"); }
+                else { mask=mask+bit; if len(names)>0 { names=concat(names,","); } names=concat(names,effect); }
+                if !eat(&mut p,",") { break; }
+            }
+        } else if text_eq(annotation,"intent") {
+            if kind(&p)!=3 { error(&mut p,"intent requires a text literal"); } else { p.cursor=p.cursor+1; }
+        } else { error(&mut p,"unknown annotation; use @effect or @intent"); }
+        expect(&mut p,")");
+    }
+    let mut public=0; if eat(&mut p,"pub") { public=1; }
+    let mut target=-1;
+    if eat(&mut p,"fn") { target=function(&mut p,public,false); }
+    else if !inside_impl && eat(&mut p,"test") { target=function(&mut p,public,true); }
+    else { error(&mut p,"annotations apply to functions"); return -1; }
+    push(p.tree.roots,target);
+    return emit(&mut p,26,names,"",pos,mask,[target]);
+}
+fn declaration(p:&mut Parser)->int {
+    let pos=position(&p);
+    if peek(&p,"@") { return annotated(&mut p,pos,false); }
+    let mut public=0; if eat(&mut p,"pub") { public=1; }
+    if eat(&mut p,"mod") { let name=word(&mut p); expect(&mut p,";"); return emit(&mut p,1,name,"",pos,public,[]); }
+    if eat(&mut p,"fn") { return function(&mut p,public,false); }
+    if eat(&mut p,"test") { return function(&mut p,public,true); }
+    let mut category=0;
+    if eat(&mut p,"soa") { expect(&mut p,"vector"); category=4; public=public+2; }
+    else if eat(&mut p,"struct") { category=2; }
+    else if eat(&mut p,"enum") { category=3; }
+    else if eat(&mut p,"vector") { category=4; }
+    else if eat(&mut p,"map") { category=5; }
+    else if eat(&mut p,"arena") { category=25; }
+    if category==0 { error(&mut p,"unsupported declaration (expected mod/struct/enum/vector/map/arena/impl/fn/test)"); return -1; }
+    let name=word(&mut p); let mut members=[];
+    if !capital(&name) { error(&mut p,"data type names must begin with an uppercase letter"); }
+    if category==4 || category==5 || category==25 {
+        expect(&mut p,"("); let first=datatype(&mut p); let field=emit(&mut p,8,"element",first,pos,0,[]); push(members,field);
+        if category==5 { expect(&mut p,","); let second=datatype(&mut p); let entry=emit(&mut p,8,"value",second,pos,0,[]); push(members,entry); }
+        expect(&mut p,")"); expect(&mut p,";");
+    } else {
+        expect(&mut p,"{");
+        while !peek(&p,"}") && len(p.tree.error)==0 {
+            let at=position(&p); let field=word(&mut p); let mut typ="unit"; let mut tag=9;
+            if category==2 { tag=8; expect(&mut p,":"); typ=datatype(&mut p); }
+            else if eat(&mut p,"(") { typ=datatype(&mut p); expect(&mut p,")"); }
+            let entry=emit(&mut p,tag,field,typ,at,0,[]); push(members,entry);
+            if !eat(&mut p,",") { break; }
+        }
+        expect(&mut p,"}");
+    }
+    return emit(&mut p,category,name,"",pos,public,members);
+}
+pub fn parse(source:text)->crate::ast::Tree {
+    let lines=crate::ast::line_starts(&source);
+    let tokens=crate::lexer::scan(source);
+    if len(tokens.error)>0 {
+        return crate::ast::Tree{nodes:crate::ast::Nodes(),roots:[],error:tokens.error,error_at:tokens.error_at,lines:lines};
+    }
+    let mut p=Parser{tokens:tokens,tree:crate::ast::empty(),cursor:0,depth:0,owner:""};
+    while kind(&p)!=0 && len(p.tree.error)==0 {
+        if eat(&mut p,"impl") {
+            p.owner=path(&mut p); expect(&mut p,"{");
+            while !peek(&p,"}") && len(p.tree.error)==0 {
+                if peek(&p,"@") { let at=position(&p); let annotation=annotated(&mut p,at,true); push(p.tree.roots,annotation); continue; }
+                let mut public=0; if eat(&mut p,"pub") { public=1; }
+                expect(&mut p,"fn"); let root=function(&mut p,public,false); push(p.tree.roots,root);
+            }
+            expect(&mut p,"}"); p.owner="";
+        } else { let root=declaration(&mut p); push(p.tree.roots,root); }
+    }
+    p.tree.lines=lines; return p.tree;
+}
+
+test parser_builds_indexed_nodes() {
+    let tree=parse("struct Item{value:int} fn main(){let item=Item{value:2};if true{print item.value;}else if false{}else{}}");
+    assert len(tree.error)==0; assert len(tree.roots)==2; assert len(tree.nodes)>12;
+    for node in &tree.nodes { for i in 0..len(node.children) { let edge=at(node.children,i); assert edge>=0 && edge<len(tree.nodes); } }
+}
+test parser_rejects_unsupported_and_malformed() {
+    let malformed=parse("fn main(){let x=;}"); assert len(malformed.error)>0;
+    let unsupported=parse("trait Future{}"); assert len(unsupported.error)>0;
+    let missing=parse("fn main(){print 1;"); assert len(missing.error)>0;
+    let keyword=parse("fn for(){}"); assert len(keyword.error)>0;
+}
+test parser_bounds_recursion() {
+    let mut source="1";
+    for i in 0..110 { source=concat("(",concat(source,")")); }
+    let tree=parse(concat("fn main(){print ",concat(source,";}"))); assert len(tree.error)>0;
+    let mut chain="fn main(){if true{}";
+    for i in 0..110 { chain=concat(chain,"else if false{}"); }
+    let branches=parse(concat(chain,"}")); assert len(branches.error)>0;
+}
+
+test parser_builds_soa_spans_and_pair_bindings() {
+    let tree=parse("struct Row{x:int}soa vector Rows(Row);vector Values(int);fn adjust(values:&mut [Values]){borrow mut (left,right)=at_pair(values,0,1){left=right;}}");assert len(tree.error)==0;let declaration=clone_at(tree.nodes,at(tree.roots,1));assert declaration.kind==4 && declaration.flag==2;
+}

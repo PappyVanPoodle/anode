@@ -1,0 +1,32 @@
+pub fn early(number:int)->crate::model::Packet {
+    let captured="captured";
+    for index in 0..12 {
+        let owner=crate::model::packet(index,concat(captured,int_text(index)));
+        let scratch=[concat("temporary-",int_text(index)),"tail"];
+        if index==number { return owner; }
+        if index%2==0 { continue; }
+        if index>8 { break; }
+        assert len(scratch)==2;
+    }
+    return crate::model::packet(number,clone(captured));
+}
+pub fn lookup(table:&crate::model::Table,key:&text)->crate::model::Packet {
+    borrow value=get(table,key) { return clone(value); }
+}
+pub fn inspect(packet:&crate::model::Packet)->int { return packet.score(); }
+pub fn alter(packet:&mut crate::model::Packet,delta:int) {
+    for value in &mut packet.numbers { value=value+delta; }
+    packet.label=concat(packet.label,"!");
+}
+pub fn while_flow(limit:int)->int {
+    let mut number=0;let mut total=0;
+    while number<limit {
+        let local=crate::model::packet(number,concat("while-",int_text(number)));
+        number=number+1;
+        if number%2==0 { continue; }
+        if number>9 { break; }
+        total=total+local.score();
+    }
+    return total;
+}
+pub fn short_circuit(value:&mut crate::model::Packet)->bool { push(value.numbers,999);return true; }

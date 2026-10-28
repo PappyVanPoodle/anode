@@ -1,0 +1,2 @@
+fixtures/negative/unsupported.an: parse: 1:1: unsupported declaration (expected mod/struct/enum/vector/map/arena/impl/fn/test)
+frontend rejected input

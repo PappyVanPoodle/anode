@@ -1,0 +1,2 @@
+fixtures/negative/v026-pair-shared.an:byte 58: at_pair requires borrow mut (left,right)
+frontend rejected input

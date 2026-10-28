@@ -1,0 +1,35 @@
+enum Input { Success(text), Failure(text) }
+enum Output { Done(int), Fault(text) }
+struct Node { label:text, values:ints }
+arena Nodes(Node);
+enum Flag { Yes, No }
+fn source(ok:bool)->Input { if ok { return Input::Success("payload"); } return Input::Failure("recoverable"); }
+fn accept(owner:text,value:text)->int { return len(owner)+len(value); }
+fn work(ok:bool)->Output {
+    let mut nodes=Nodes(); let h=alloc(nodes,Node{label:"arena owner",values:[1,2,3]});
+    let partial=Node{label:"moved field",values:[4,5]}; let label=partial.label;
+    borrow mut row=get(nodes,h) {
+        let independent=clone(row.label);
+        let n=accept("argument owner",try source(ok));
+        row.label="updated";
+        return Output::Done(n+len(label)+len(independent));
+    }
+}
+fn read_source()->Output { let content=try try_read_text("fixtures/positive.an"); return Output::Done(len(content)); }
+fn read_missing()->Output { let content=try try_read_text("fixtures/absent-v025-input.an"); return Output::Done(len(content)); }
+fn flag(ok:bool)->Flag { if ok { return Flag::Yes(); } return Flag::No(); }
+fn unit(ok:bool)->Flag { try flag(ok); return Flag::Yes(); }
+fn looped(ok:bool)->Output {
+    for i in 0..2 { let owner=Node{label:"loop",values:[i]}; let text=try source(ok); print len(owner.values)+len(text); }
+    return Output::Done(2);
+}
+fn main() {
+    match work(true) { Output::Done(n)=>{ print n; } Output::Fault(message)=>{ assert false; } }
+    match work(false) { Output::Done(n)=>{ assert false; } Output::Fault(message)=>{ print message; } }
+    match read_source() { Output::Done(n)=>{ print n>0; } Output::Fault(message)=>{ assert false; } }
+    match read_missing() { Output::Done(n)=>{ assert false; } Output::Fault(message)=>{ print len(message)>0; } }
+    match unit(true) { Flag::Yes=>{ print true; } Flag::No=>{ assert false; } }
+    match unit(false) { Flag::Yes=>{ assert false; } Flag::No=>{ print false; } }
+    match looped(false) { Output::Done(n)=>{ assert false; } Output::Fault(message)=>{ print message; } }
+    match looped(true) { Output::Done(n)=>{ print n; } Output::Fault(message)=>{ assert false; } }
+}

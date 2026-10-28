@@ -1,0 +1,2 @@
+fixtures/negative/v026-bounds-move.an:byte 128: mutation while scoped loan is active: v
+frontend rejected input

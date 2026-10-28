@@ -1,0 +1,2 @@
+fn alter(left:&mut text,right:&text) { left=clone(right); }
+fn main() { let mut value="owner";alter(&mut value,&value); }

@@ -1,0 +1,1 @@
+fn main(){let mode=arg(0);let zero=wrapping_add(u8(255),u8(1));assert zero==u8(0);if text_eq(mode,"unsigned"){print u64(-1);}else{print u8(256);}}

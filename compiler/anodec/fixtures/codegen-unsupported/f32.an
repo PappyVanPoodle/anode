@@ -1,0 +1,2 @@
+fn main(){let value=f32(7.0);print int(value);}
+

@@ -1,0 +1,2 @@
+fixtures/negative/borrow.an:byte 127: mutation while scoped loan is active: values
+frontend rejected input

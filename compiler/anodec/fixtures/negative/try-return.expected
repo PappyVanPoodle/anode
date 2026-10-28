@@ -1,0 +1,2 @@
+fixtures/negative/try-return.an:byte 67: try requires a two-variant enclosing return enum
+frontend rejected input

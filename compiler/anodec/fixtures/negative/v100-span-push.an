@@ -1,0 +1,1 @@
+vector W(int);fn grow(values:&[W],out:&mut [W]) { for value in &values { push(values,value); } }fn main(){let mut w=W();push(w,1);let mut o=W();push(o,0);borrow all=region(w,0,1) { borrow mut sink=region(o,0,1) { grow(&all,&mut sink); } }}

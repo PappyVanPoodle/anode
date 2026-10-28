@@ -1,0 +1,9 @@
+[package]
+name = "bootstrap-compiler"
+version = "0.1.0"
+[capabilities]
+file_read = true
+process_args = true
+file_write = true
+threads = false
+process = true

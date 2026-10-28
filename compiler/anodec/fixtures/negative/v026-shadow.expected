@@ -1,0 +1,2 @@
+fixtures/negative/v026-shadow.an:byte 82: scoped borrow requires builtin at/get/region/at_pair
+frontend rejected input

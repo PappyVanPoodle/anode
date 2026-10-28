@@ -1,0 +1,2 @@
+fixtures/negative/v026-return.an:byte 17: borrowed returns are outside the subset
+frontend rejected input

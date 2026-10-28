@@ -1,0 +1,1 @@
+struct R{k:u64,n:int}soa vector Rs(R);fn main(){let mut rows=Rs();push(rows,R{k:u64(1),n:1});for row in &rows { push(rows,R{k:row.k,n:row.n}); }}

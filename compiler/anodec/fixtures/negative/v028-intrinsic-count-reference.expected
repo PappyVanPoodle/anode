@@ -1,0 +1,2 @@
+fixtures/negative/v028-intrinsic-count-reference.an:byte 38: type mismatch: expected int, got &int
+frontend rejected input

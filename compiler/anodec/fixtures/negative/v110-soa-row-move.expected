@@ -1,0 +1,2 @@
+fixtures/negative/v110-soa-row-move.an:byte 131: cannot move borrowed owner: row.label
+frontend rejected input

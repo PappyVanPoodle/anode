@@ -1,0 +1,941 @@
+mod lexer;
+mod ast;
+mod parser;
+mod checker;
+mod ir_dump;
+mod cgen;
+
+// v1.4 anodec: Anode.toml projects, `mod` discovery and `{ std = true }`
+// dependencies, plus the check/build/run/test/new/add commands. The legacy
+// flag interface (--summary, --emit-c, --build-exe, --list, --project,
+// --package) is unchanged. This source stays inside the subset the Rust seed
+// compiler accepts: two-argument concat, index loops over ints/texts.
+struct Dependency { alias:text, path:text, standard:bool }
+vector Dependencies(Dependency);
+struct Manifest { name:text, entry:text, dependencies:Dependencies, capabilities:texts, error:text }
+struct Loaded { program:ast::Program, name:text, root:text, error:text, aliases:texts, sources:texts }
+struct Options { command:text, target:text, out:text, debug:bool, as_json:bool, forwarded:texts, toolchain:text, runtime:text, names:texts, error:text }
+struct Built { exe:text, names:texts }
+
+fn cat(parts:texts)->text { return text_join(parts,""); }
+fn absolute(path:&text)->bool { return text_starts_with(path,"/") || text_starts_with(path,"\\") || (len(path)>1 && byte_at(path,1)==58); }
+fn path_join(left:&text,right:text)->text {
+    if len(left)==0 { return right; }
+    if text_ends_with(left,"/") || text_ends_with(left,"\\") { return concat(left,right); }
+    return cat([clone(left),"/",right]);
+}
+fn find_byte(value:&text,wanted:int)->int {
+    for i in 0..len(value) { if byte_at(value,i)==wanted { return i; } }
+    return 0-1;
+}
+fn parse_unit(path:&text)->ast::Tree {
+    let mut tree=ast::empty();
+    match try_read_text(clone(path)) {
+        ReadResult::Ok(source)=>{
+            let original=clone(source); tree=parser::parse(source);
+            if len(tree.error)>0 {
+                let location=lexer::line_column(&original,tree.error_at);
+                tree.error=concat(int_text(at(location,0)),concat(":",concat(int_text(at(location,1)),concat(": ",tree.error))));
+            }
+        }
+        ReadResult::Err(message)=>{ tree.error=message; }
+    }
+    return tree;
+}
+fn add_file(program:&mut ast::Program,path:text,prefix:&text) {
+    let name=concat(prefix,ast::filename(&path));
+    insert(program.modules,clone(name),1);
+    let tree=parse_unit(&path);
+    push(program.units,ast::Unit{name:name,path:path,tree:tree});
+}
+fn load(paths:&texts)->ast::Program {
+    let mut program=ast::program(ast::Units());
+    for i in 0..len(paths) { let prefix=""; add_file(&mut program,text_at(paths,i),&prefix); }
+    return program;
+}
+fn source_list(path:&text)->texts {
+    let prefix=ast::directory(&path); let mut paths=texts();
+    match try_read_text(path) {
+        ReadResult::Ok(source)=>{
+            let lines=text_lines(source);
+            for i in 0..len(lines) {
+                let item=text_trim(text_at(lines,i));
+                if len(item)==0 || text_starts_with(item,"#") { continue; }
+                if text_starts_with(item,"/") || text_starts_with(item,"\\") || (len(item)>1 && byte_at(item,1)==58) { push(paths,item); }
+                else { push(paths,concat(prefix,item)); }
+            }
+        }
+        ReadResult::Err(message)=>{ push(paths,clone(path)); }
+    }
+    return paths;
+}
+
+// A deliberately small TOML reader: [section] headers, `key = value` lines,
+// `#` comments outside strings, and one-line `{ path = "..." }` or
+// `{ std = true }` dependency tables.
+fn strip_comment(line:&text)->text {
+    let mut quoted=false;
+    for i in 0..len(line) { let c=byte_at(line,i); if c==34 { quoted=!quoted; } if c==35 && !quoted { return text_trim(slice(line,0,i)); } }
+    return text_trim(clone(line));
+}
+fn unquote(value:&text)->text {
+    let size=len(value);
+    if size>=2 && byte_at(value,0)==34 && byte_at(value,size-1)==34 { return slice(value,1,size-1); }
+    return clone(value);
+}
+fn empty_manifest()->Manifest { return Manifest{name:"",entry:"",dependencies:Dependencies(),capabilities:texts(),error:""}; }
+fn parse_dependency(alias:&text,value:&text)->Dependency {
+    let mut dependency=Dependency{alias:"",path:"",standard:false};
+    if !valid_alias(&alias) || !text_starts_with(value,"{") || !text_ends_with(value,"}") { return dependency; }
+    let fields=split(slice(value,1,len(value)-1),",");
+    for i in 0..len(fields) {
+        let field=text_trim(text_at(fields,i)); if len(field)==0 { continue; }
+        let equals=find_byte(&field,61); if equals<1 { return Dependency{alias:"",path:"",standard:false}; }
+        let key=text_trim(slice(field,0,equals)); let setting=text_trim(slice(field,equals+1,len(field)));
+        if text_eq(key,"path") { dependency.path=unquote(&setting); }
+        else if text_eq(key,"std") { dependency.standard=text_eq(setting,"true"); }
+    }
+    if len(dependency.path)==0 && !dependency.standard { return dependency; }
+    dependency.alias=clone(alias); return dependency;
+}
+fn parse_manifest(source:&text)->Manifest {
+    let mut manifest=empty_manifest(); let lines=text_lines(clone(source)); let mut section="";
+    for i in 0..len(lines) {
+        let raw=text_at(lines,i); let line=strip_comment(&raw);
+        if len(line)==0 { continue; }
+        if text_starts_with(line,"[") {
+            if !text_ends_with(line,"]") { manifest.error=concat("invalid section header ",line); break; }
+            section=text_trim(slice(line,1,len(line)-1)); continue;
+        }
+        let equals=find_byte(&line,61);
+        if equals<1 { manifest.error=concat("invalid manifest line ",line); break; }
+        let key=text_trim(slice(line,0,equals)); let value=text_trim(slice(line,equals+1,len(line)));
+        if text_eq(section,"package") && text_eq(key,"name") { manifest.name=unquote(&value); }
+        else if text_eq(section,"build") && text_eq(key,"entry") { manifest.entry=unquote(&value); }
+        else if text_eq(section,"capabilities") && text_eq(value,"true") { push(manifest.capabilities,key); }
+        else if text_eq(section,"dependencies") {
+            let dependency=parse_dependency(&key,&value);
+            if len(dependency.alias)==0 { manifest.error=concat("invalid dependency ",key); break; }
+            push(manifest.dependencies,dependency);
+        }
+    }
+    return manifest;
+}
+fn std_package(name:&text)->bool {
+    return text_eq(name,"encoding") || text_eq(name,"cli") || text_eq(name,"csv_jsonl") || text_eq(name,"markdown")
+        || text_eq(name,"glob_regex") || text_eq(name,"json") || text_eq(name,"docgen") || text_eq(name,"bench");
+}
+// Std packages resolve from %ANODE_HOME%\packages, then ../../packages beside
+// the project (a package inside an SDK-shaped folder).
+fn std_candidates(name:&text,project:&text,home:&text)->texts {
+    let mut candidates=texts();
+    if len(home)>0 { let packages=path_join(&home,"packages"); push(candidates,path_join(&packages,clone(name))); }
+    let mut base=clone(project); if len(base)==0 { base="."; }
+    let parent=path_join(&base,"../../packages"); push(candidates,path_join(&parent,clone(name)));
+    return candidates;
+}
+fn resolve_std(name:&text,project:&text,home:&text)->text {
+    let candidates=std_candidates(&name,&project,&home);
+    for i in 0..len(candidates) { let candidate=text_at(candidates,i); let manifest=path_join(&candidate,"Anode.toml"); if file_exists(manifest) { return candidate; } }
+    return "";
+}
+// Modules load depth-first and are pushed after the modules they declare, so
+// a project's units arrive in dependency (topological) order. `mod name;`
+// in <dir>/<file>.an names the sibling <dir>/name.an.
+fn load_module(loaded:&mut Loaded,path:text,prefix:&text,depth:int) {
+    let name=concat(prefix,ast::filename(&path));
+    if contains_key(loaded.program.modules,name) { return; }
+    if depth>64 { loaded.error="module nesting exceeds 64"; return; }
+    insert(loaded.program.modules,clone(name),1);
+    let tree=parse_unit(&path); let directory=ast::directory(&path); let mut children=texts();
+    for i in 0..len(tree.roots) { borrow node=at(tree.nodes,at(tree.roots,i)) { if node.kind==1 { push(children,clone(node.name)); } } }
+    for i in 0..len(children) { let child=concat(clone(directory),concat(text_at(children,i),".an")); load_module(&mut loaded,child,&prefix,depth+1); }
+    push(loaded.program.units,ast::Unit{name:name,path:path,tree:tree});
+}
+fn load_package(loaded:&mut Loaded,directory:&text,prefix:&text,home:&text,depth:int) {
+    if depth>16 { loaded.error="dependency nesting exceeds 16"; return; }
+    let path=path_join(&directory,"Anode.toml"); let mut manifest=empty_manifest();
+    if file_exists(path) { let source=read_text(clone(path)); manifest=parse_manifest(&source); }
+    if len(manifest.error)>0 { loaded.error=cat([path,": ",clone(manifest.error)]); return; }
+    if depth==0 && len(manifest.name)>0 { loaded.name=clone(manifest.name); }
+    for i in 0..len(manifest.dependencies) {
+        borrow dependency=at(manifest.dependencies,i) {
+            let alias=clone(dependency.alias); let mut target="";
+            if dependency.standard {
+                if !std_package(&alias) { loaded.error=concat("unknown std package ",alias); return; }
+                target=resolve_std(&alias,&directory,&home);
+                if len(target)==0 { loaded.error=cat(["cannot find std package ",alias,": ",home_hint(&home)]); return; }
+            } else { target=clone(dependency.path); if !absolute(&target) { target=path_join(&directory,clone(dependency.path)); } }
+            let mut seen=false;
+            for j in 0..len(loaded.aliases) {
+                let known=text_at(loaded.aliases,j);
+                if text_eq(known,alias) { seen=true; let source=text_at(loaded.sources,j); if !text_eq(source,target) { loaded.error=cat(["dependency ",clone(alias)," resolves to both ",source," and ",clone(target)]); return; } }
+            }
+            if !seen {
+                push(loaded.aliases,clone(alias)); push(loaded.sources,clone(target));
+                let child=concat(alias,"::"); load_package(&mut loaded,&target,&child,&home,depth+1);
+                if len(loaded.error)>0 { return; }
+            }
+        }
+    }
+    let mut entry=clone(manifest.entry);
+    if len(entry)==0 { entry="src/main.an"; if depth>0 { entry="src/lib.an"; } }
+    load_module(&mut loaded,path_join(&directory,entry),&prefix,0);
+}
+// A target is a .an file (its `mod` tree is followed), or a directory with
+// Anode.toml, or (for the historical bootstrap layout) frontend.sources.
+fn load_target(target:&text,home:&text)->Loaded {
+    let mut loaded=Loaded{program:ast::program(ast::Units()),name:"program",root:clone(target),error:"",aliases:texts(),sources:texts()};
+    if text_ends_with(target,".an") {
+        loaded.root=ast::directory(&target); loaded.name=ast::filename(&target);
+        if !file_exists(target) { loaded.error=concat("cannot read ",clone(target)); return loaded; }
+        let prefix=""; load_module(&mut loaded,clone(target),&prefix,0); return loaded;
+    }
+    let manifest=path_join(&target,"Anode.toml");
+    if file_exists(manifest) { let prefix=""; load_package(&mut loaded,&target,&prefix,&home,0); return loaded; }
+    let list=path_join(&target,"frontend.sources");
+    if file_exists(list) { let paths=source_list(&list); for i in 0..len(paths) { let prefix=""; add_file(&mut loaded.program,text_at(paths,i),&prefix); } return loaded; }
+    loaded.error=concat("no Anode.toml, frontend.sources or .an file at ",clone(target)); return loaded;
+}
+
+// Diagnostics are "path:byte N: message"; the CLI reports 1-based lines.
+fn located(program:&ast::Program,diagnostic:&text)->texts {
+    let parts=split(clone(diagnostic),":byte ");
+    if len(parts)>=2 {
+        let file=text_at(parts,0); let rest=slice(diagnostic,len(file)+6,len(diagnostic)); let colon=find_byte(&rest,58);
+        if colon>0 && is_int(slice(rest,0,colon)) {
+            let pos=parse_int(slice(rest,0,colon)); let message=text_trim(slice(rest,colon+1,len(rest))); let mut line=0;
+            for unit in &program.units { if text_eq(unit.path,file) { line=ast::line_of(&unit.tree.lines,pos); } }
+            return [file,int_text(line),message];
+        }
+    }
+    let parsed=split(clone(diagnostic),": parse: ");
+    if len(parsed)>=2 {
+        let file=text_at(parsed,0); let rest=slice(diagnostic,len(file)+9,len(diagnostic)); let colon=find_byte(&rest,58); let mut line="0";
+        if colon>0 && is_int(slice(rest,0,colon)) { line=slice(rest,0,colon); }
+        return [file,line,concat("parse: ",rest)];
+    }
+    return ["","0",clone(diagnostic)];
+}
+fn show_diagnostics(program:&ast::Program,diagnostics:&texts,as_json:bool) {
+    let mut items=texts();
+    for i in 0..len(diagnostics) {
+        let entry=text_at(diagnostics,i); let parts=located(&program,&entry);
+        let file=text_at(parts,0); let line=text_at(parts,1); let message=text_at(parts,2);
+        if as_json { push(items,cat(["{\"file\":",cgen::json_string(&file),",\"line\":",line,",\"message\":",cgen::json_string(&message),",\"severity\":\"error\"}"])); }
+        else if len(file)>0 { print cat([file,":",line,": ",message]); }
+        else { print message; }
+    }
+    if as_json { print cat(["{\"diagnostics\":[",text_join(items,","),"],\"ok\":false}"]); }
+}
+
+fn usage() {
+    print "Usage: anodec <command> [options]";
+    print "  anodec check [DIR|FILE.an] [--json]";
+    print "  anodec build [DIR|FILE.an] [-o OUT.exe] [--debug] [--toolchain RECORD] [--runtime-dir DIR]";
+    print "  anodec run [DIR|FILE.an] [--debug] [-- ARGS...]";
+    print "  anodec test [DIR|FILE.an]";
+    print "  anodec new DIR";
+    print "  anodec add PKG...";
+    print "The SDK (bin\\codegen-runtime, packages, AGENTS.md) is read from %ANODE_HOME%.";
+    print "Legacy: anodec [--summary | --emit-c OUT.c [--build-manifest OUT.json] | --build-exe OUT.exe --toolchain RECORD [--runtime-dir DIR] [--debug]] FILE.an ... | --list SOURCES | --project DIRECTORY [--package alias=SOURCES]";
+}
+// v1.2 Stage-3 native build. The toolchain record: line 1 is cl.exe, lines 2-5
+// include directories and lines 6-8 library directories. anodec finds it next
+// to the compiler (bin/toolchain.record), in the native cache, or writes one
+// from vswhere; no user path is needed on the command line.
+fn toolchain_record(path:&text)->texts {
+    let mut lines=texts();
+    match try_read_text(clone(path)) {
+        ReadResult::Ok(source)=>{
+            let all=text_lines(source);
+            for i in 0..len(all) { let item=text_trim(text_at(all,i)); if len(item)>0 { push(lines,item); } }
+        }
+        ReadResult::Err(message)=>{ print message; }
+    }
+    return lines;
+}
+fn native_c_path(out:&text)->text {
+    if text_ends_with(out,".exe") { return concat(slice(out,0,len(out)-4),".c"); }
+    return concat(out,".c");
+}
+fn pdb_path(out:&text)->text {
+    if text_ends_with(out,".exe") { return concat(slice(out,0,len(out)-4),".pdb"); }
+    return concat(out,".pdb");
+}
+// The same compile/link options as the deterministic build manifest
+// (cgen::build_manifest): /std:c11 /utf-8 /MD /O2, 64 MiB stack, no incremental
+// link. --debug swaps /O2 for /Od /Zi and links /DEBUG into OUT.pdb; test
+// runners use /O1 (optimize=false): about 3x faster to compile than /O2 and
+// still quick to run, since they are rebuilt on every `anodec test`.
+fn native_arguments(c_file:&text,out:&text,runtime:&text,toolchain:&texts,debug:bool,optimize:bool)->texts {
+    let mut args=texts(); push(args,"/nologo"); push(args,"/std:c11"); push(args,"/utf-8"); push(args,"/MD");
+    if debug { push(args,"/Od"); push(args,"/Zi"); } else if optimize { push(args,"/O2"); } else { push(args,"/O1"); }
+    push(args,concat("/I",runtime));
+    for i in 1..len(toolchain) { if i<=4 { push(args,concat("/I",text_at(toolchain,i))); } }
+    push(args,clone(c_file)); push(args,concat(runtime,"/runtime.c"));
+    let mut objects=ast::directory(&out); if len(objects)==0 { objects=".\\"; }
+    push(args,concat("/Fe",out)); push(args,concat("/Fo",clone(objects)));
+    if debug { push(args,concat("/Fd",objects)); }
+    push(args,"/link"); push(args,"/INCREMENTAL:NO"); push(args,"/STACK:67108864");
+    if debug { push(args,"/DEBUG"); push(args,concat("/PDB:",pdb_path(&out))); }
+    for i in 5..len(toolchain) { push(args,concat("/LIBPATH:",text_at(toolchain,i))); }
+    return args;
+}
+fn compile_c(c_file:&text,out:&text,runtime:&text,toolchain:&texts,debug:bool,optimize:bool)->bool {
+    let args=native_arguments(&c_file,&out,&runtime,&toolchain,debug,optimize);
+    let mut built=false;
+    match process_run(text_at(toolchain,0),&args) {
+        ProcessRun::Output(captured)=>{
+            if captured.status!=0 { print captured.stdout; print captured.stderr; print concat("native compiler exit status ",int_text(captured.status)); }
+            else { built=true; }
+        }
+        ProcessRun::Error(message)=>{ print message; }
+    }
+    return built;
+}
+fn build_native(source:text,out:&text,runtime:&text,record:&text,debug:bool)->bool {
+    let toolchain=toolchain_record(&record);
+    if len(toolchain)<1 { print "toolchain record has no compiler line"; return false; }
+    let c_file=native_c_path(&out); write_text(clone(c_file),source); print "emitted C";
+    let built=compile_c(&c_file,&out,&runtime,&toolchain,debug,true);
+    if built { print "built executable"; }
+    return built;
+}
+fn ensure_directory(path:&text) {
+    for i in 1..len(path) {
+        let c=byte_at(path,i);
+        if c==47 || c==92 { let prefix=slice(path,0,i); if !(len(prefix)==2 && byte_at(prefix,1)==58) { let created=create_dir(prefix); } }
+    }
+    let finished=create_dir(clone(path));
+}
+// The SDK (bin\codegen-runtime, packages\, AGENTS.md) is found only through
+// ANODE_HOME, which install.ps1 sets; "" when it is unset.
+fn compiler_home()->text { return env_var("ANODE_HOME"); }
+fn home_hint(home:&text)->text {
+    if len(home)==0 { return "ANODE_HOME is not set. Set it to the Anode SDK folder (install.ps1 does this), for example: setx ANODE_HOME C:\\Tools\\anode-1.3.0-windows-x64, then open a new terminal"; }
+    return cat(["ANODE_HOME is ",clone(home),"; check that it is the Anode SDK folder"]);
+}
+// %ANODE_HOME%\bin\codegen-runtime, then codegen-runtime\ in the current
+// folder (the anodec source folder has one, for the bootstrap stages).
+fn find_runtime(home:&text)->text {
+    let mut candidates=texts();
+    if len(home)>0 { let bin=path_join(&home,"bin"); push(candidates,path_join(&bin,"codegen-runtime")); push(candidates,path_join(&home,"codegen-runtime")); }
+    push(candidates,"codegen-runtime");
+    for i in 0..len(candidates) { let candidate=text_at(candidates,i); let header=path_join(&candidate,"bvalue.h"); if file_exists(header) { return candidate; } }
+    return "";
+}
+fn latest_sdk(root:&text)->text {
+    let mut best="";
+    if !file_exists(clone(root)) { return best; }
+    let names=list_dir(clone(root));
+    for i in 0..len(names) {
+        let name=text_at(names,i); let folder=path_join(&root,clone(name)); let header=path_join(&folder,"um/windows.h");
+        if text_starts_with(name,"10.") && file_exists(header) { best=name; }
+    }
+    return best;
+}
+// Locates MSVC through vswhere and the newest Windows 10/11 SDK; returns the
+// eight record lines, or nothing when Build Tools for C++ are missing.
+fn detect_toolchain()->texts {
+    let mut record=texts();
+    let vswhere="C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe";
+    if !file_exists(vswhere) { return record; }
+    let args=["-latest","-products","*","-requires","Microsoft.VisualStudio.Component.VC.Tools.x86.x64","-property","installationPath"];
+    let mut install="";
+    match process_run(clone(vswhere),&args) {
+        ProcessRun::Output(captured)=>{ if captured.status==0 { let lines=text_lines(captured.stdout); if len(lines)>0 { install=text_trim(text_at(lines,0)); } } }
+        ProcessRun::Error(message)=>{ print message; }
+    }
+    if len(install)==0 { return record; }
+    let version_file=path_join(&install,"VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt");
+    if !file_exists(version_file) { return record; }
+    let version=text_trim(read_text(clone(version_file)));
+    let tools=path_join(&install,"VC/Tools/MSVC"); let msvc=path_join(&tools,version);
+    let kits="C:/Program Files (x86)/Windows Kits/10"; let include_root=path_join(&kits,"Include"); let sdk=latest_sdk(&include_root);
+    if len(sdk)==0 { return record; }
+    let include=path_join(&include_root,clone(sdk)); let library_root=path_join(&kits,"Lib"); let library=path_join(&library_root,sdk);
+    push(record,path_join(&msvc,"bin/Hostx64/x64/cl.exe")); push(record,path_join(&msvc,"include"));
+    push(record,path_join(&include,"ucrt")); push(record,path_join(&include,"shared")); push(record,path_join(&include,"um"));
+    push(record,path_join(&msvc,"lib/x64")); push(record,path_join(&library,"ucrt/x64")); push(record,path_join(&library,"um/x64"));
+    return record;
+}
+fn find_toolchain(home:&text)->text {
+    let mut bin=""; let mut beside="";
+    if len(home)>0 { bin=path_join(&home,"bin"); beside=path_join(&bin,"toolchain.record"); if file_exists(beside) { return beside; } }
+    let cache=env_var("LOCALAPPDATA"); let mut folder=""; let mut cached="";
+    if len(cache)>0 { folder=path_join(&cache,"ZenithLanguage/native-cache"); cached=path_join(&folder,"toolchain.txt"); if file_exists(cached) { return cached; } }
+    let detected=detect_toolchain();
+    if len(detected)<8 { return ""; }
+    let mut target=clone(beside);
+    if len(bin)==0 || !file_exists(bin) { if len(cached)==0 { return ""; } ensure_directory(&folder); target=cached; }
+    write_text(clone(target),concat(text_join(detected,"\n"),"\n")); print concat("wrote toolchain record ",clone(target));
+    return target;
+}
+
+fn command_name(value:&text)->bool {
+    return text_eq(value,"check") || text_eq(value,"build") || text_eq(value,"run") || text_eq(value,"test") || text_eq(value,"new") || text_eq(value,"add");
+}
+fn parse_options(command:text)->Options {
+    let mut options=Options{command:command,target:".",out:"",debug:false,as_json:false,forwarded:texts(),toolchain:"",runtime:"",names:texts(),error:""};
+    let mut index=1; let mut passthrough=false; let mut targeted=false;
+    while index<args_count() {
+        let option=arg(index); index=index+1;
+        if passthrough { push(options.forwarded,option); }
+        else if text_eq(option,"--") { passthrough=true; }
+        else if text_eq(option,"--json") { options.as_json=true; }
+        else if text_eq(option,"--debug") { options.debug=true; }
+        else if text_eq(option,"-o") || text_eq(option,"--toolchain") || text_eq(option,"--runtime-dir") {
+            if index>=args_count() { options.error=concat(option," requires a value"); break; }
+            let value=arg(index); index=index+1;
+            if text_eq(option,"-o") { options.out=value; } else if text_eq(option,"--toolchain") { options.toolchain=value; } else { options.runtime=value; }
+        }
+        else if text_starts_with(option,"-") { options.error=concat("unknown option ",option); break; }
+        else if text_eq(options.command,"new") || text_eq(options.command,"add") { push(options.names,option); }
+        else if targeted { options.error=concat("unexpected argument ",option); break; }
+        else { options.target=option; targeted=true; }
+    }
+    return options;
+}
+fn check_target(options:&Options,home:&text) {
+    let loaded=load_target(&options.target,&home);
+    if len(loaded.error)>0 { print loaded.error; exit_code(1); return; }
+    let report=checker::check(&loaded.program);
+    if len(report.diagnostics)>0 { show_diagnostics(&loaded.program,&report.diagnostics,options.as_json); exit_code(1); return; }
+    if options.as_json { print cat(["{\"checked_files\":",int_text(len(loaded.program.units)),",\"ok\":true}"]); }
+    else { print "ok"; }
+}
+fn lower(program:&ast::Program,report:&checker::Report,debug:bool,tests:bool)->cgen::Emission {
+    if tests { return cgen::emit_tests(&program,&report,debug); }
+    return cgen::emit_with_options(&program,&report,debug);
+}
+// Emits C for the target (or its test runner) and compiles it with cl.exe.
+// The default output is <project>/.zenith/build/<name>.exe; test runners are
+// <name>-anodec-tests.exe so they never replace the seed compiler's cached runner.
+// There is no working-directory builtin, so --debug asks %ComSpec% (`cd`) once
+// and makes every unit path absolute; `#line` then works from any debugger cwd.
+// (A Stage-1 binary built by the Rust seed quotes every argument, which cmd
+// rejects; it then keeps relative paths.)
+fn working_directory()->text {
+    let shell=env_var("ComSpec"); let mut found="";
+    if len(shell)==0 { return found; }
+    let args=["/d","/c","cd"];
+    match process_run(shell,&args) {
+        ProcessRun::Output(captured)=>{ if captured.status==0 { let lines=text_lines(captured.stdout); if len(lines)>0 { let first_line=text_trim(text_at(lines,0)); if absolute(&first_line) { found=first_line; } } } }
+        ProcessRun::Error(message)=>{ print message; }
+    }
+    return found;
+}
+fn anchor_paths(program:&mut ast::Program,base:&text) {
+    if len(base)==0 { return; }
+    for i in 0..len(program.units) {
+        borrow mut unit=at(program.units,i) {
+            if !absolute(&unit.path) {
+                let mut relative=clone(unit.path); if text_starts_with(relative,"./") || text_starts_with(relative,".\\") { relative=slice(relative,2,len(relative)); }
+                unit.path=path_join(&base,relative);
+            }
+        }
+    }
+}
+fn build_artifact(options:&Options,home:&text,tests:bool)->Built {
+    let mut built=Built{exe:"",names:texts()};
+    let mut loaded=load_target(&options.target,&home);
+    if len(loaded.error)>0 { print loaded.error; return built; }
+    let report=checker::check(&loaded.program);
+    if len(report.diagnostics)>0 { show_diagnostics(&loaded.program,&report.diagnostics,false); return built; }
+    let mut runtime=clone(options.runtime); if len(runtime)==0 { runtime=find_runtime(&home); }
+    if len(runtime)==0 { print cat(["cannot find codegen-runtime (or pass --runtime-dir DIR): ",home_hint(&home)]); return built; }
+    let mut record=clone(options.toolchain); if len(record)==0 { record=find_toolchain(&home); }
+    if len(record)==0 { print "cannot find MSVC; install Visual Studio Build Tools with the C++ workload or pass --toolchain RECORD"; return built; }
+    let toolchain=toolchain_record(&record);
+    if len(toolchain)<1 { print concat("toolchain record has no compiler line: ",record); return built; }
+    if options.debug { let base=working_directory(); anchor_paths(&mut loaded.program,&base); }
+    let generated=lower(&loaded.program,&report,options.debug,tests);
+    if len(generated.diagnostics)>0 { for i in 0..len(generated.diagnostics) { print text_at(generated.diagnostics,i); } return built; }
+    if tests { built.names=cgen::test_names(&loaded.program); }
+    let mut out=clone(options.out);
+    if len(out)==0 {
+        let folder=path_join(&loaded.root,".zenith/build"); ensure_directory(&folder);
+        let mut file=clone(loaded.name); if tests { file=concat(file,"-anodec-tests"); }
+        out=path_join(&folder,concat(file,".exe"));
+    }
+    let parent=ast::directory(&out); if len(parent)>0 { ensure_directory(&parent); }
+    let c_file=native_c_path(&out); write_text(clone(c_file),generated.source);
+    if !compile_c(&c_file,&out,&runtime,&toolchain,options.debug,!tests) { return built; }
+    built.exe=out; return built;
+}
+// process_run captures a child's output; print it back without doubling the
+// final newline.
+fn forward(output:&text) {
+    if len(output)==0 { return; }
+    let mut end=len(output);
+    if byte_at(output,end-1)==10 { end=end-1; if end>0 && byte_at(output,end-1)==13 { end=end-1; } }
+    print slice(output,0,end);
+}
+fn run_target(options:&Options,home:&text) {
+    let built=build_artifact(&options,&home,false);
+    if len(built.exe)==0 { exit_code(1); return; }
+    match process_run(clone(built.exe),&options.forwarded) {
+        ProcessRun::Output(captured)=>{
+            forward(&captured.stdout); forward(&captured.stderr);
+            let mut status=captured.status; if status<0 || status>255 { status=1; }
+            exit_code(status);
+        }
+        ProcessRun::Error(message)=>{ print message; exit_code(1); }
+    }
+}
+// Every test runs in its own process (runner argument = test index), so one
+// failing assertion cannot hide the others.
+fn test_target(options:&Options,home:&text) {
+    let built=build_artifact(&options,&home,true);
+    if len(built.exe)==0 { exit_code(1); return; }
+    let mut passed=0; let mut failed=0;
+    for i in 0..len(built.names) {
+        let name=text_at(built.names,i); let argv=[int_text(i)];
+        match process_run(clone(built.exe),&argv) {
+            ProcessRun::Output(captured)=>{
+                if captured.status==0 { print concat("test ",name); passed=passed+1; }
+                else { print cat(["FAILED ",name," (exit status ",int_text(captured.status),")"]); forward(&captured.stdout); forward(&captured.stderr); failed=failed+1; }
+            }
+            ProcessRun::Error(message)=>{ print cat(["FAILED ",name,": ",message]); failed=failed+1; }
+        }
+    }
+    if failed==0 { print concat(int_text(passed)," tests passed"); }
+    else { print cat([int_text(failed)," of ",int_text(passed+failed)," tests failed"]); exit_code(1); }
+}
+fn package_name(directory:&text)->text {
+    let mut start=0; let mut end=len(directory);
+    while end>0 && (byte_at(directory,end-1)==47 || byte_at(directory,end-1)==92) { end=end-1; }
+    for i in 0..end { let c=byte_at(directory,i); if c==47 || c==92 { start=i+1; } }
+    let letters="abcdefghijklmnopqrstuvwxyz"; let mut parts=texts();
+    for i in start..end {
+        let c=byte_at(directory,i);
+        if c>=65 && c<=90 { push(parts,slice(letters,c-65,c-64)); }
+        else if (c>=97 && c<=122) || (c>=48 && c<=57) || c==95 || c==45 { push(parts,slice(directory,i,i+1)); }
+        else { push(parts,"_"); }
+    }
+    let name=text_join(parts,"");
+    if len(name)==0 { return "app"; }
+    return name;
+}
+fn manifest_text(name:&text)->text {
+    return cat(["[package]\nname = \"",clone(name),"\"\nversion = \"0.1.0\"\n\n[build]\nentry = \"src/main.an\"\n\n[capabilities]\nfile_read = false\nfile_write = false\nprocess_args = false\nprocess = false\nthreads = false\nffi = false\nnet = false\n\n[dependencies]\n"]);
+}
+fn claude_text(name:&text)->text {
+    return cat(["# CLAUDE.md - ",clone(name),"\n\nRead [`AGENTS.md`](./AGENTS.md) before writing or editing any `.an` files in this project.\n\n## Quick Rules for AI Agents\n1. **Never guess Rust syntax for `.an` files.** Read [`AGENTS.md`](./AGENTS.md) first.\n2. **Check the project (milliseconds):** `anodec check . --json`\n3. **Run tests and execute:** `anodec test .` and `anodec run .`\n4. **Debug builds:** `anodec build . --debug` writes a .pdb next to the .exe.\n5. **Reuse the standard library:** `anodec add json cli` adds `{ std = true }` dependencies (encoding, cli, csv_jsonl, markdown, glob_regex, json, docgen, bench).\n"]);
+}
+// AGENTS.md is copied from the SDK; nothing is created when it cannot be found.
+fn new_project(options:&Options,home:&text) {
+    if len(options.names)!=1 { print "usage: anodec new DIR"; exit_code(2); return; }
+    if len(home)==0 { print concat("anodec new copies AGENTS.md from the SDK. ",home_hint(&home)); exit_code(1); return; }
+    let guide=path_join(&home,"AGENTS.md");
+    if !file_exists(guide) { print cat(["cannot find ",clone(guide),": ",home_hint(&home)]); exit_code(1); return; }
+    let directory=text_at(options.names,0); let manifest=path_join(&directory,"Anode.toml");
+    if file_exists(manifest) { print concat(manifest," already exists"); exit_code(1); return; }
+    ensure_directory(&directory); let sources=path_join(&directory,"src"); let created=create_dir(clone(sources));
+    let name=package_name(&directory);
+    write_text(manifest,manifest_text(&name));
+    let entry=path_join(&sources,"main.an");
+    if !file_exists(entry) { write_text(entry,cat(["fn main() {\n    print \"Hello from ",clone(name),"\";\n}\n"])); }
+    let agents=path_join(&directory,"AGENTS.md"); if !file_exists(agents) { write_text(agents,read_text(guide)); }
+    let claude=path_join(&directory,"CLAUDE.md"); if !file_exists(claude) { write_text(claude,claude_text(&name)); }
+    print cat(["created ",clone(directory)," (anodec run ",directory,")"]);
+}
+// Adds `<pkg> = { std = true }` after the last entry of [dependencies]
+// (creating the section if needed), skipping names already present and
+// keeping the file's CRLF or LF line endings.
+fn with_dependencies(source:&text,packages:&texts)->text {
+    let mut newline="\n"; let mut cr=""; if contains(source,"\r\n") { newline="\r\n"; cr="\r"; }
+    let lines=split(clone(source),"\n"); let mut header=0-1; let mut end=len(lines); let mut existing=texts();
+    for i in 0..len(lines) {
+        let raw=text_at(lines,i); let item=strip_comment(&raw);
+        if text_starts_with(item,"[") {
+            if header>=0 && end==len(lines) && i>header { end=i; }
+            if header<0 && text_eq(item,"[dependencies]") { header=i; }
+        } else if header>=0 && end==len(lines) {
+            let equals=find_byte(&item,61); if equals>0 { push(existing,text_trim(slice(item,0,equals))); }
+        }
+    }
+    let mut additions=texts();
+    for i in 0..len(packages) {
+        let name=text_at(packages,i); let mut present=false;
+        for j in 0..len(existing) { let known=text_at(existing,j); if text_eq(known,name) { present=true; } }
+        if !present { push(additions,concat(clone(name)," = { std = true }")); push(existing,name); }
+    }
+    if len(additions)==0 { return clone(source); }
+    if header<0 {
+        let mut out=clone(source);
+        if len(out)>0 && !text_ends_with(out,"\n") { out=concat(out,clone(newline)); }
+        if len(out)>0 { out=concat(out,clone(newline)); }
+        out=concat(out,concat("[dependencies]",clone(newline)));
+        for i in 0..len(additions) { out=concat(out,concat(text_at(additions,i),clone(newline))); }
+        return out;
+    }
+    let mut last=header;
+    for i in header+1..end { let item=text_trim(text_at(lines,i)); if len(item)>0 { last=i; } }
+    let mut out=texts();
+    for i in 0..len(lines) {
+        push(out,text_at(lines,i));
+        if i==last { for j in 0..len(additions) { push(out,concat(text_at(additions,j),clone(cr))); } }
+    }
+    return text_join(out,"\n");
+}
+fn add_packages(options:&Options) {
+    if len(options.names)==0 { print "usage: anodec add PKG..."; exit_code(2); return; }
+    for i in 0..len(options.names) {
+        let name=text_at(options.names,i);
+        if !std_package(&name) { print concat("unknown std package ",name); print "std packages: encoding, cli, csv_jsonl, markdown, glob_regex, json, docgen, bench"; exit_code(1); return; }
+    }
+    let path="Anode.toml";
+    if !file_exists(path) { print "no Anode.toml in the current directory"; exit_code(1); return; }
+    let source=read_text(clone(path)); let updated=with_dependencies(&source,&options.names);
+    if text_eq(updated,source) { print "dependencies already present"; return; }
+    write_text(path,updated);
+    for i in 0..len(options.names) { print cat(["dependency ",text_at(options.names,i)," = { std = true }"]); }
+}
+fn dispatch(command:text) {
+    let options=parse_options(command);
+    if len(options.error)>0 { print options.error; usage(); exit_code(2); return; }
+    let home=compiler_home();
+    if text_eq(options.command,"check") { check_target(&options,&home); }
+    else if text_eq(options.command,"build") { let built=build_artifact(&options,&home,false); if len(built.exe)==0 { exit_code(1); } else { print concat("built ",built.exe); } }
+    else if text_eq(options.command,"run") { run_target(&options,&home); }
+    else if text_eq(options.command,"test") { test_target(&options,&home); }
+    else if text_eq(options.command,"new") { new_project(&options,&home); }
+    else { add_packages(&options); }
+}
+fn valid_alias(alias:&text)->bool {
+    if len(alias)==0 || text_eq(alias,"crate") { return false; }
+    for i in 0..len(alias) { let c=byte_at(alias,i); if !(c>=97 && c<=122) && !(c>=48 && c<=57 && i>0) && c!=95 { return false; } }
+    return true;
+}
+fn append_list(paths:&mut texts,prefixes:&mut texts,list:&text,prefix:&text) {
+    let loaded=source_list(&list);if len(loaded)==0 { print "empty source list";assert false;return; } for i in 0..len(loaded) { push(paths,text_at(loaded,i)); push(prefixes,clone(prefix)); }
+}
+fn main() {
+    if args_count()>0 { let first_word=arg(0); if command_name(&first_word) { dispatch(first_word); return; } }
+    let mut first=0;let mut brief=false;let mut output="";let mut manifest="";let mut paths=texts();let mut prefixes=texts();let mut aliases=texts();
+    let mut native="";let mut runtime="codegen-runtime";let mut record="";let mut debug=false;
+    if args_count()==0 { usage();return; }
+    while first<args_count() {
+        let option=arg(first);first=first+1;
+        if text_eq(option,"--summary") { brief=true; }
+        else if text_eq(option,"--debug") { debug=true; }
+        else if text_eq(option,"--build-exe") || text_eq(option,"--runtime-dir") || text_eq(option,"--toolchain") {
+            if first>=args_count() { usage();assert false;return; }
+            if text_eq(option,"--build-exe") { native=arg(first); }else if text_eq(option,"--runtime-dir") { runtime=arg(first); }else { record=arg(first); }first=first+1;
+        }
+        else if text_eq(option,"--emit-c") || text_eq(option,"--build-manifest") {
+            if first>=args_count() { usage();assert false;return; }
+            if text_eq(option,"--emit-c") { output=arg(first); }else { manifest=arg(first); }first=first+1;
+        }
+        else if text_eq(option,"--package") {
+            if first>=args_count() { usage();assert false;return; }
+            let spec=arg(first);first=first+1;let mut separator=-1;
+            for i in 0..len(spec) { if byte_at(spec,i)==61 { separator=i;break; } }
+            if separator<1 { print "package requires alias=SOURCE-LIST";assert false;return; }
+            let alias=slice(spec,0,separator);let list=slice(spec,separator+1,len(spec));
+            if !valid_alias(&alias) || len(list)==0 { print "invalid package alias/list";assert false;return; }
+            for i in 0..len(aliases) { let previous=text_at(aliases,i);if text_eq(previous,alias) { print "duplicate package alias";assert false;return; } }
+            push(aliases,clone(alias));let prefix=concat(alias,"::");append_list(&mut paths,&mut prefixes,&list,&prefix);
+        }
+        else if text_eq(option,"--list") || text_eq(option,"--project") {
+            if first>=args_count() { usage();assert false;return; }
+            let mut list=arg(first);first=first+1;if text_eq(option,"--project") { list=concat(list,"/frontend.sources"); }
+            let prefix="";append_list(&mut paths,&mut prefixes,&list,&prefix);
+        }
+        else { if text_starts_with(option,"--") { print concat("unknown option ",option);assert false;return; } push(paths,option);push(prefixes,""); }
+    }
+    if len(paths)==0 { print "empty source list";assert false;return; }
+    if (brief && len(output)>0) || (len(manifest)>0 && (len(output)==0 || text_eq(output,manifest))) { print "manifest requires a distinct --emit-c output";assert false;return; }
+    if len(native)>0 && (brief || len(output)>0 || len(manifest)>0 || len(record)==0) { print "--build-exe requires --toolchain and excludes --summary/--emit-c/--build-manifest";assert false;return; }
+    if len(native)>0 { output=native_c_path(&native); }
+    let mut program=ast::program(ast::Units());
+    for i in 0..len(paths) { let path=text_at(paths,i);let prefix=text_at(prefixes,i);
+        if text_eq(path,output) || text_eq(path,manifest) { print "output would overwrite input";assert false;return; }
+        if len(prefix)==0 { let module=ast::filename(&path);for j in 0..len(aliases) { let alias=text_at(aliases,j);if text_eq(module,alias) { print "package alias collides with root module";assert false;return; } } }
+        add_file(&mut program,path,&prefix);
+    }
+    let report=checker::check(&program);
+    if len(report.diagnostics)>0 { for i in 0..len(report.diagnostics) { print text_at(report.diagnostics,i); }print "frontend rejected input";assert false;return; }
+    if len(output)>0 {
+        let generated=cgen::emit_with_options(&program,&report,debug);
+        if len(generated.diagnostics)>0 { for i in 0..len(generated.diagnostics) { print text_at(generated.diagnostics,i); }print "codegen rejected input";assert false;return; }
+        if len(native)>0 { let built=build_native(clone(generated.source),&native,&runtime,&record,debug);if !built { print "native build failed";assert false; }return; }
+        write_text(output,generated.source);if len(manifest)>0 { write_text(manifest,cgen::build_manifest(&program,&output)); }print "emitted C";
+    }
+    else if brief { print ir_dump::summary(&program,&report); }
+    else { print ir_dump::render(&program,&report); }
+}
+fn analyze(source:text)->checker::Report {
+    let tree=parser::parse(source); let mut units=ast::Units();
+    push(units,ast::Unit{name:"fixture",path:"fixture.an",tree:tree});
+    let program=ast::program(units); return checker::check(&program);
+}
+fn has_error(report:&checker::Report,fragment:text)->bool {
+    for i in 0..len(report.diagnostics) { let message=text_at(report.diagnostics,i); if contains(message,fragment) { return true; } }
+    return false;
+}
+test valid_records_collections_methods_and_flow() {
+    let paths=["fixtures/positive.an"]; let program=load(&paths); let report=checker::check(&program);
+    for i in 0..len(report.diagnostics) { print text_at(report.diagnostics,i); }
+    assert len(report.diagnostics)==0; assert len(report.symbols)>=9; assert report.functions==3; assert report.resolved>15; assert len(report.types)>50;
+    let ir=ir_dump::render(&program,&report); let marker="decl positive::Entry::score"; assert contains(ir,marker);
+    let expected=read_text("fixtures/positive.ir"); let actual=concat(ir,"\n"); assert text_eq(actual,expected);
+}
+test malformed_and_unsupported_are_rejected() {
+    let malformed=analyze("fn main(){let value=;}"); let found=has_error(&malformed,"parse"); assert found;
+    let unsupported=analyze("fn main(){spawn work();}"); assert len(unsupported.diagnostics)>0;
+}
+test unknown_name_and_type_are_rejected() {
+    let name=analyze("fn main(){print missing;}"); let found=has_error(&name,"unknown name"); assert found;
+    let typ=analyze("fn work(value:Missing){} fn main(){}"); let typed=has_error(&typ,"unknown type"); assert typed;
+    let call=analyze("fn main(){missing();}"); let called=has_error(&call,"unknown function"); assert called;
+}
+test duplicate_global_local_and_field_are_rejected() {
+    let global=analyze("fn main(){} fn main(){}"); let first=has_error(&global,"duplicate declaration"); assert first;
+    let local=analyze("fn main(){let x=1;let x=2;}"); let second=has_error(&local,"duplicate local"); assert second;
+    let field=analyze("struct Value{x:int,x:int} fn main(){}"); let third=has_error(&field,"duplicate member"); assert third;
+}
+test type_and_call_mismatches_are_rejected() {
+    let typ=analyze("fn main(){let value:int=true;}"); let found=has_error(&typ,"type mismatch"); assert found;
+    let call=analyze("fn add(value:int)->int{return value;} fn main(){print add(false);}"); let called=has_error(&call,"type mismatch"); assert called;
+    let mapped=analyze("map Values(text,int);fn main(){let mut values=Values();insert(values,1,true);}"); assert len(mapped.diagnostics)>=2;
+}
+test moves_and_borrowed_moves_are_rejected() {
+    let moved=analyze("fn take(value:text){} fn main(){let value=\"owned\";take(value);print value;}");
+    let found=has_error(&moved,"use after move"); assert found; assert moved.moves==1;
+    let borrowed=analyze("fn take(value:text){} fn inspect(value:&text){take(value);} fn main(){}");
+    let cannot=has_error(&borrowed,"cannot move borrowed"); assert cannot;
+}
+test branch_moves_and_loop_moves_are_rejected() {
+    let branch=analyze("fn take(value:text){} fn main(){let value=\"owner\";if true{take(value);}print value;}");
+    let found=has_error(&branch,"use after move"); assert found;
+    let repeated=analyze("fn take(value:text){} fn main(){let value=\"owner\";for i in 0..2{take(value);}}");
+    let loop_error=has_error(&repeated,"repeatable loop"); assert loop_error;
+}
+test partial_field_moves_and_reinitialization() {
+    let moved=analyze("struct Pair{left:text,right:text}fn main(){let pair=Pair{left:\"a\",right:\"b\"};let left=pair.left;print pair.left;}");
+    let found=has_error(&moved,"use after move"); assert found;
+    let restored=analyze("fn take(value:text){}fn main(){let mut value=\"a\";take(value);value=\"b\";print value;}");
+    assert len(restored.diagnostics)==0;
+}
+test scoped_loans_and_assertion_purity_are_checked() {
+    let loan=analyze("map Values(text,int);fn main(){let mut values=Values();insert(values,\"a\",1);borrow value=get(values,\"a\"){insert(values,\"b\",2);}}");
+    let locked=has_error(&loan,"scoped loan"); assert locked;
+    let get_call=analyze("map Values(text,int);fn main(){let values=Values();let value=get(values,\"a\");}");
+    let scoped=has_error(&get_call,"only in a scoped borrow"); assert scoped;
+    let assertion=analyze("fn yes()->bool{return true;}fn main(){assert yes();}");
+    let pure=has_error(&assertion,"pure builtins"); assert pure;
+    let numeric=analyze("fn main(){let value=int(true);}");
+    let converted=has_error(&numeric,"numeric conversion"); assert converted;
+}
+test scope_mutation_and_match_errors_are_rejected() {
+    let scope=analyze("fn main(){if true{let inner=1;}print inner;}"); assert len(scope.diagnostics)>0;
+    let immutable=analyze("fn main(){let value=1;value=2;}"); let found=has_error(&immutable,"immutable binding"); assert found;
+    let matching=analyze("enum Value{First,Second}fn main(){let value=Value::First();match value{Value::First=>{}}}");
+    let arm=has_error(&matching,"nonexhaustive"); assert arm;
+    let recursive=analyze("struct Recursive{next:Recursive}fn main(){}"); let cycle=has_error(&recursive,"recursive owned type"); assert cycle;
+}
+test cross_module_names_and_signatures_are_checked() {
+    let list_path="fixtures/project/frontend.sources"; let paths=source_list(&list_path); let program=load(&paths); let report=checker::check(&program);
+    for i in 0..len(report.diagnostics) { print text_at(report.diagnostics,i); }
+    assert len(program.units)==2; assert len(report.diagnostics)==0; assert report.functions==2;
+    let name="model::Value"; let exists=contains_key(report.symbols,name); assert exists;
+}
+test self_sources_use_the_same_frontend_and_have_typed_ir() {
+    let list_path="frontend.sources"; let paths=source_list(&list_path); let program=load(&paths); let report=checker::check(&program);
+    for i in 0..len(report.diagnostics) { print text_at(report.diagnostics,i); }
+    assert len(program.units)==7; assert len(report.diagnostics)==0; assert report.functions>75;
+    assert len(report.symbols)>100; assert len(report.types)>1000; assert report.resolved>1000; assert report.moves>30;
+    for unit in 0..len(program.units) {
+        borrow source=at(program.units,unit) {
+            assert len(source.tree.error)==0; assert len(source.tree.roots)>0; assert len(source.tree.nodes)>80;
+            let mut typed=0; let mut functions=0;
+            for index in 0..len(source.tree.nodes) {
+                let key=ast::node_key(unit,index); if contains_key(report.types,key) { typed=typed+1; }
+            }
+            for i in 0..len(source.tree.roots) {
+                let node=ast::get(&program,unit,at(source.tree.roots,i));
+                if node.kind==6 { let name=ast::qualify(&source.name,&node.name); let known=contains_key(report.symbols,name); assert known; functions=functions+1; }
+            }
+            assert typed>40; assert functions>0;
+        }
+    }
+    let ir=ir_dump::render(&program,&report); let second=ir_dump::render(&program,&report); assert text_eq(ir,second);
+    let marker="decl checker::infer"; assert contains(ir,marker);
+    let nominal="type=ast::Node"; assert contains(ir,nominal);
+    print ir_dump::summary(&program,&report);
+}
+test arena_ids_and_try_are_checked_in_target_programs() {
+    let accepted=analyze("struct Node{label:text,next:Links}vector Links(id(Nodes));arena Nodes(Node);enum Input{Good(text),Bad(text)}enum Output{Ok(int),Err(text)}fn source()->Input{return Input::Good(\"yes\");}fn work()->Output{let mut nodes=Nodes();let h=alloc(nodes,Node{label:\"a\",next:Links()});borrow mut node=get(nodes,h){let text=try source();node.label=text;}let n=clone_get(nodes,h);let freed=free(nodes,h);assert freed;return Output::Ok(len(n.label));}fn main(){match work(){Output::Ok(n)=>{print n;}Output::Err(e)=>{print e;}}}");
+    for i in 0..len(accepted.diagnostics) { print text_at(accepted.diagnostics,i); }
+    assert len(accepted.diagnostics)==0;
+    let wrong_id=analyze("arena A(int);arena B(int);fn main(){let mut a=A();let mut b=B();let h=alloc(b,1);let n=clone_get(a,h);}");
+    let mismatch=has_error(&wrong_id,"type mismatch"); assert mismatch;
+    let invalid_id=analyze("struct A{x:int}fn work(h:id(A)){}fn main(){}"); assert len(invalid_id.diagnostics)>0;
+    let loan=analyze("arena A(int);fn main(){let mut a=A();let h=alloc(a,1);borrow n=get(a,h){let freed=free(a,h);}}");
+    let conflict=has_error(&loan,"scoped loan"); assert conflict;
+}
+test try_requires_compatible_owned_results_and_preserves_moves() {
+    let scalar=analyze("fn work()->int{let n=try 1;return n;}fn main(){}"); assert len(scalar.diagnostics)>0;
+    let mismatch=analyze("enum A{Ok(int),Err(text)}enum B{Ok(int),Err(int)}fn work(a:A)->B{let n=try a;return B::Ok(n);}fn main(){}");
+    let typed=has_error(&mismatch,"type mismatch"); assert typed;
+    let borrowed=analyze("enum A{Ok(int),Err(text)}fn work(a:&A)->A{let n=try a;return A::Ok(n);}fn main(){}"); assert len(borrowed.diagnostics)>0;
+    let moved=analyze("enum A{Ok(int),Err(text)}fn work(a:A)->A{let n=try a;return a;}fn main(){}");
+    let used=has_error(&moved,"use after move"); assert used;
+}
+
+test vector_regions_are_borrowed_only_and_protect_backing_owners() {
+    let accepted=analyze("vector Values(int);fn sum(values:&[Values])->int{let mut n=0;for value in &values{n=n+value;}return n;}fn main(){let mut values=Values();push(values,1);push(values,2);borrow mut window=region(values,0,2){borrow mut inner=region(window,0,1){replace(inner,0,7);}borrow all=region(window,0,2){print sum(&all);}borrow mut (a,b)=at_pair(window,0,1){a=a+b;}}}");for i in 0..len(accepted.diagnostics){print text_at(accepted.diagnostics,i);}assert len(accepted.diagnostics)==0;
+    let moved=analyze("vector V(int);fn main(){let v=V();borrow window=region(v,0,0){let escaped=window;}}");assert len(moved.diagnostics)>0;
+    let resize=analyze("vector V(int);fn grow(v:&mut [V]){push(v,1);}fn main(){}");assert len(resize.diagnostics)>0;
+    let bounds=analyze("vector V(int);fn change(v:&mut V)->int{push(v,1);return 0;}fn main(){let mut v=V();borrow window=region(v,change(&mut v),0){}}");let reserved=has_error(&bounds,"scoped loan");assert reserved;
+}
+test soa_storage_requires_records_and_contiguous_regions() {
+    let accepted=analyze("struct Row{label:text,score:int}soa vector Rows(Row);fn main(){let mut rows=Rows();push(rows,Row{label:\"a\",score:1});for row in &mut rows{row.score=row.score+1;}borrow mut row=at(rows,0){row=Row{label:\"b\",score:2};}let copy=clone(rows);let item=clone_at(copy,0);print item.label;}");assert len(accepted.diagnostics)==0;
+    let nonrecord=analyze("soa vector Rows(int);fn main(){}");assert len(nonrecord.diagnostics)>0;
+    let noncontiguous=analyze("struct Row{x:int}soa vector Rows(Row);fn main(){let rows=Rows();borrow window=region(rows,0,0){}}");let rejected=has_error(&noncontiguous,"noncontiguous");assert rejected;
+}
+test package_alias_validation_is_deterministic() { let good="metrics_2";let bad="crate";let path="a/b";let accepted=valid_alias(&good);let reserved=valid_alias(&bad);let separator=valid_alias(&path);assert accepted;assert !reserved;assert !separator; }
+
+test effect_contracts_are_enforced_transitively() {
+    let accepted=analyze("@effect(no_alloc,no_io,bounded)\nfn mix(a:u32,b:u32)->u32{return bit_xor(rotl(a,5),b);}\n@effect(no_alloc,no_io,bounded)\nfn frame(mut buf:[u8;8],seed:u32)->[u8;8]{for i in 0..2 { let ok=try_write_u32_be(buf,i*4,mix(seed,u32(i))); assert ok; }return buf;}\nstruct R{x:int}\nimpl R {\n@effect(no_alloc,no_io,bounded)\npub fn get(self:&Self)->int{return self.x;}\n}\n@intent(\"keep\")\n@effect(no_io)\nfn label()->text{return \"ok\";}\nfn main(){let packet=frame([u8(0);8],u32(7));print read_u32_be(packet,4);let r=R{x:1};print r.get();print label();}");
+    for i in 0..len(accepted.diagnostics) { print text_at(accepted.diagnostics,i); }
+    assert len(accepted.diagnostics)==0;
+    let alloc=analyze("@effect(no_alloc)\nfn label()->text{return \"x\";}\nfn main(){}"); let allocates=has_error(&alloc,"effect contract no_alloc violated in label (including transitive calls)"); assert allocates;
+    let io=analyze("@effect(no_io)\nfn show(n:int){print n;}\nfn main(){}"); let prints=has_error(&io,"effect contract no_io violated in show"); assert prints;
+    let spin=analyze("@effect(bounded)\nfn spin(n:int)->int{let mut i=0;while i<n {i=i+1;}return i;}\nfn main(){}"); let loops=has_error(&spin,"effect contract bounded violated in spin"); assert loops;
+    let direct=analyze("@effect(bounded)\nfn fact(n:int)->int{if n<=1 {return 1;}return n*fact(n-1);}\nfn main(){}"); let recursive=has_error(&direct,"effect contract bounded violated in fact"); assert recursive;
+    let mutual=analyze("@effect(bounded)\nfn even(n:int)->bool{if n==0 {return true;}return odd(n-1);}\n@effect(bounded)\nfn odd(n:int)->bool{if n==0 {return false;}return even(n-1);}\nfn main(){}"); let cycle=has_error(&mutual,"effect contract bounded violated in even"); assert cycle;
+    let unpublished=analyze("fn helper()->int{return 1;}\n@effect(bounded)\nfn outer()->int{return helper();}\nfn main(){}"); let hidden=has_error(&unpublished,"effect contract bounded violated in outer"); assert hidden;
+    let transitive=analyze("fn inner()->int{print 1;return 1;}\nfn middle()->int{return inner();}\n@effect(no_io)\nfn outer()->int{return middle();}\nfn main(){}"); let chained=has_error(&transitive,"effect contract no_io violated in outer"); assert chained;
+    let order=analyze("@effect(bounded,no_alloc)\nfn first()->text{return \"x\";}\nfn main(){}"); let declared=has_error(&order,"effect contract no_alloc violated in first"); assert declared; assert len(order.diagnostics)==1;
+}
+test annotation_syntax_matches_the_rust_parser() {
+    let duplicate=analyze("@effect(no_io,no_io)\nfn f(){}\nfn main(){}"); let twice=has_error(&duplicate,"duplicate effect contract"); assert twice;
+    let unknown=analyze("@effect(fast)\nfn f(){}\nfn main(){}"); let unsupported=has_error(&unknown,"supported effects: no_alloc, no_io, bounded"); assert unsupported;
+    let other=analyze("@inline(x)\nfn f(){}\nfn main(){}"); let annotation=has_error(&other,"unknown annotation; use @effect or @intent"); assert annotation;
+    let data=analyze("@effect(no_io)\nstruct R{x:int}\nfn main(){}"); let applies=has_error(&data,"annotations apply to functions"); assert applies;
+    let intent=analyze("@intent(1)\nfn f(){}\nfn main(){}"); let literal=has_error(&intent,"intent requires a text literal"); assert literal;
+}
+test fixed_arrays_and_big_endian_writes_are_checked() {
+    let accepted=analyze("fn main(){let mut buf=[u8(0);8];let ok=try_write_u16_be(buf,6,u16(258));let big=wire_try_write_u64_be(buf,0,u64(1));let tail=read_u16_be(buf,6);let head=wire_read_u32_be(buf,4);set(buf,0,u8(9));let first=at(buf,0);let copy=clone(buf);assert ok && big;print len(copy);print tail;print head;print first;}");
+    for i in 0..len(accepted.diagnostics) { print text_at(accepted.diagnostics,i); }
+    assert len(accepted.diagnostics)==0;
+    let frozen=analyze("fn main(){let buf=[u8(0);8];let ok=try_write_u32_be(buf,0,u32(1));}"); let immutable=has_error(&frozen,"immutable binding"); assert immutable;
+    let wide=analyze("fn main(){let mut buf=[u16(0);8];let ok=try_write_u32_be(buf,0,u32(1));}"); let bytes=has_error(&wide,"wire access requires a fixed [u8;N] array"); assert bytes;
+    let value=analyze("fn main(){let mut buf=[u8(0);8];let ok=try_write_u32_be(buf,0,u16(1));}"); let width=has_error(&value,"type mismatch"); assert width;
+    let grow=analyze("fn main(){let mut buf=[u8(0);8];push(buf,u8(1));}"); let fixed=has_error(&grow,"fixed arrays support len, at, set, clone and wire reads/writes"); assert fixed;
+    let empty=analyze("fn main(){let buf=[u8(0);0];}"); let length=has_error(&empty,"fixed array length must be 1..65536"); assert length;
+    let element=analyze("fn main(){let buf=[\"x\";4];}"); let integer=has_error(&element,"fixed array element must be an integer type"); assert integer;
+    let shared=analyze("fn fill(buf:&[u8;4]){let ok=try_write_u16_be(buf,0,u16(1));}fn main(){}"); let borrowed=has_error(&shared,"mutation through shared borrow"); assert borrowed;
+}
+test process_run_results_are_checked() {
+    let accepted=analyze("fn launch(program:text,args:&texts)->int{match process_run(program,&args){ProcessRun::Output(out)=>{print out.stdout;return out.status;}ProcessRun::Error(message)=>{print message;return 0-1;}}}fn main(){}");
+    for i in 0..len(accepted.diagnostics) { print text_at(accepted.diagnostics,i); }
+    assert len(accepted.diagnostics)==0;
+    let owned=analyze("fn main(){let args=texts();let launched=process_run(\"x\",args);}"); let argv=has_error(&owned,"process_run argv requires a shared borrowed texts collection"); assert argv;
+    let bounded=analyze("@effect(bounded)\nfn launch(args:&texts)->int{let launched=process_run(\"x\",&args);return 1;}\nfn main(){}"); let waits=has_error(&bounded,"effect contract bounded violated in launch"); assert waits;
+}
+
+// v1.4 helpers: lower one fixture file (C text, "" when rejected) and count
+// occurrences of a marker in generated C.
+fn lowered(source:text,debug:bool)->text {
+    let tree=parser::parse(source); let mut units=ast::Units();
+    push(units,ast::Unit{name:"fixture",path:"fixture.an",tree:tree});
+    let program=ast::program(units); let report=checker::check(&program);
+    for i in 0..len(report.diagnostics) { print text_at(report.diagnostics,i); }
+    if len(report.diagnostics)>0 { return ""; }
+    let generated=cgen::emit_with_options(&program,&report,debug);
+    for i in 0..len(generated.diagnostics) { print text_at(generated.diagnostics,i); }
+    return generated.source;
+}
+fn occurrences(haystack:&text,needle:text)->int { let pieces=split(clone(haystack),needle); return len(pieces)-1; }
+test universal_for_iterates_ints_texts_fixed_arrays_and_map_keys() {
+    let source="map Ages(text,int);map Codes(int,text);fn main(){let numbers=[1,2,3];let mut total=0;for n in &numbers { total=total+n; }let names=[\"a\",\"b\"];for name in &names { print name; }let buf=[u8(1);4];for b in &buf { total=total+int(b); }let mut ages=Ages();insert(ages,\"x\",1);for key in &ages { print key; }let mut codes=Codes();insert(codes,7,\"seven\");for code in &codes { total=total+code; }let listed=keys(ages);let numbered=keys(codes);print len(listed)+len(numbered)+total;}";
+    let report=analyze(clone(source));
+    for i in 0..len(report.diagnostics) { print text_at(report.diagnostics,i); }
+    assert len(report.diagnostics)==0;
+    let c=lowered(source,false); let helper="static __forceinline B zn_v140_keys(B* map)"; let call="=zn_v140_keys(";
+    let definitions=occurrences(&c,clone(helper)); let calls=occurrences(&c,clone(call)); let strides=occurrences(&c,"*2)");
+    assert definitions==1; assert calls==2; assert strides==2;
+    let mutable=analyze("fn main(){let mut numbers=[1];for n in &mut numbers { }}"); let shared=has_error(&mutable,"mutable iteration requires a nominal vector"); assert shared;
+    let owned=analyze("fn main(){let numbers=[1];for n in numbers { }}"); let borrowed=has_error(&owned,"vector iteration requires & or &mut"); assert borrowed;
+    let listed=analyze("fn main(){let numbers=[1];let k=keys(numbers);}"); let mapped=has_error(&listed,"keys requires a map with text or int keys"); assert mapped;
+    let narrow=analyze("map Small(u8,int);fn main(){let small=Small();let k=keys(small);}"); let width=has_error(&narrow,"keys requires a map with text or int keys"); assert width;
+}
+test variadic_concat_folds_left_and_keeps_two_argument_c() {
+    let call="b_call(\"concat\"";
+    let pair=lowered("fn main(){let a=\"a\";print concat(a,\"b\");}",false);
+    let three=lowered("fn main(){let a=\"a\";print concat(a,\"b\",\"c\");}",false);
+    let four=lowered("fn main(){let a=\"a\";let b=\"b\";print concat(a,b,\"c\",\"d\");}",false);
+    let six=lowered("fn main(){let a=\"a\";print concat(a,\"b\",\"c\",\"d\",\"e\",\"f\");}",false);
+    let n2=occurrences(&pair,clone(call)); let n3=occurrences(&three,clone(call)); let n4=occurrences(&four,clone(call)); let n6=occurrences(&six,clone(call));
+    assert n2==1; assert n3==2; assert n4==3; assert n6==5;
+    let drops=occurrences(&six,"b_drop(&t"); assert drops>=10;
+    let few=analyze("fn main(){let a=concat(\"a\");}"); let one=has_error(&few,"concat expects 2 to 16 arguments"); assert one;
+    let many=analyze("fn main(){let a=concat(\"1\",\"2\",\"3\",\"4\",\"5\",\"6\",\"7\",\"8\",\"9\",\"10\",\"11\",\"12\",\"13\",\"14\",\"15\",\"16\",\"17\");}"); let seventeen=has_error(&many,"concat expects 2 to 16 arguments"); assert seventeen;
+    let typed=analyze("fn main(){let a=concat(\"a\",\"b\",1);}"); let text_only=has_error(&typed,"text argument required"); assert text_only;
+}
+test manifest_mod_discovery_and_std_dependencies_load_in_order() {
+    let source="[package]\nname = \"demo\" # comment\n\n[build]\nentry = \"src/app.an\"\n\n[capabilities]\nfile_read = true\nnet = false\n\n[dependencies]\njson = { std = true }\nlocal = { path = \"../local\" }\n";
+    let manifest=parse_manifest(&source); let demo="demo"; let app="src/app.an";
+    assert len(manifest.error)==0; assert text_eq(manifest.name,demo); assert text_eq(manifest.entry,app);
+    assert len(manifest.capabilities)==1; assert len(manifest.dependencies)==2;
+    borrow standard=at(manifest.dependencies,0) { let json="json"; assert standard.standard; assert text_eq(standard.alias,json); }
+    borrow pathed=at(manifest.dependencies,1) { let local="../local"; assert !pathed.standard; assert text_eq(pathed.path,local); }
+    let invalid="[package\nname = \"x\"\n"; let broken=parse_manifest(&invalid); assert len(broken.error)>0;
+    let home=""; let project="fixtures/workspace/app"; let loaded=load_target(&project,&home);
+    print loaded.error; assert len(loaded.error)==0;
+    let report=checker::check(&loaded.program);
+    for i in 0..len(report.diagnostics) { print text_at(report.diagnostics,i); }
+    assert len(report.diagnostics)==0;
+    let mut names=texts();
+    for i in 0..len(loaded.program.units) { borrow unit=at(loaded.program.units,i) { push(names,clone(unit.name)); } }
+    let order=text_join(names,","); let expected="encoding::lib,local::lib,helper,util,main"; let package="app";
+    assert text_eq(order,expected); assert text_eq(loaded.name,package);
+    let width="encoding::lib::width"; let resolved=contains_key(report.symbols,width); assert resolved;
+    let variant="encoding::lib::Mode::Safe"; let qualified=contains_key(report.symbols,variant); assert qualified;
+    let wanted="json"; let sdk="C:/sdk"; let candidates=std_candidates(&wanted,&project,&sdk);
+    let first_choice=text_at(candidates,0); let second_choice=text_at(candidates,1); let installed="C:/sdk/packages/json"; let beside="fixtures/workspace/app/../../packages/json";
+    assert len(candidates)==2; assert text_eq(first_choice,installed); assert text_eq(second_choice,beside);
+    let unset=std_candidates(&wanted,&project,&home); assert len(unset)==1;
+    let hint=home_hint(&home); let missing="ANODE_HOME is not set"; let named=home_hint(&sdk); let shown="ANODE_HOME is C:/sdk";
+    assert contains(hint,missing); assert contains(named,shown);
+    let encoding="encoding"; let found=resolve_std(&encoding,&project,&home); let local_std="fixtures/workspace/app/../../packages/encoding"; assert text_eq(found,local_std);
+    let known=std_package(&wanted); let invented="serde"; let unknown=std_package(&invented); assert known; assert !unknown;
+}
+test debug_builds_emit_line_directives_only_on_request() {
+    let source="fn twice(value:int)->int {\n    return value*2;\n}\nfn main() {\n    print twice(4);\n}\n";
+    let plain=lowered(clone(source),false); let traced=lowered(clone(source),true);
+    let directive="#line"; let header="#line 1 \"fixture.an\""; let body="#line 2 \"fixture.an\""; let call="#line 5 \"fixture.an\"";
+    assert len(plain)>0; assert !contains(plain,directive); assert contains(traced,header); assert contains(traced,body); assert contains(traced,call);
+    let tree=parser::parse(clone(source)); let mut units=ast::Units(); push(units,ast::Unit{name:"main",path:"dir\\main.an",tree:tree});
+    let program=ast::program(units); let report=checker::check(&program);
+    let historical=cgen::emit(&program,&report); let options=cgen::emit_with_options(&program,&report,false); let windows=cgen::emit_with_options(&program,&report,true);
+    let escaped="#line 4 \"dir\\\\main.an\"";
+    assert text_eq(historical.source,options.source); assert contains(windows.source,escaped);
+    let starts=ast::line_starts(&source); let first_line=ast::line_of(&starts,0); let second_line=ast::line_of(&starts,27); let last_line=ast::line_of(&starts,len(source));
+    assert first_line==1; assert second_line==2; assert last_line==7;
+}
+test test_runner_emits_each_test_behind_an_index() {
+    let tree=parser::parse("fn helper()->int{return 2;}test small(){let n=helper();assert n==2;}test other(){let ok=true;assert ok;}fn main(){}");
+    let mut units=ast::Units(); push(units,ast::Unit{name:"main",path:"main.an",tree:tree}); let program=ast::program(units); let report=checker::check(&program);
+    assert len(report.diagnostics)==0;
+    let runner=cgen::emit_tests(&program,&report,false); let plain=cgen::emit(&program,&report); let names=cgen::test_names(&program);
+    let second="if(only<0||only==1){"; let selector="only=argc>1"; let small="small"; let first_name=text_at(names,0);
+    assert len(runner.diagnostics)==0; assert contains(runner.source,second); assert contains(runner.source,selector); assert !contains(plain.source,selector);
+    assert len(names)==2; assert text_eq(first_name,small);
+}
+test add_inserts_std_dependencies_and_keeps_line_endings() {
+    let crlf="[package]\r\nname = \"demo\"\r\n\r\n[dependencies]\r\njson = { std = true }\r\n\r\n[capabilities]\r\nnet = false\r\n";
+    let wanted=["json","cli","cli"]; let updated=with_dependencies(&crlf,&wanted);
+    let expected="[package]\r\nname = \"demo\"\r\n\r\n[dependencies]\r\njson = { std = true }\r\ncli = { std = true }\r\n\r\n[capabilities]\r\nnet = false\r\n";
+    assert text_eq(updated,expected);
+    let bare="[package]\nname = \"demo\"\n"; let one=["markdown"]; let added=with_dependencies(&bare,&one);
+    let created="[package]\nname = \"demo\"\n\n[dependencies]\nmarkdown = { std = true }\n"; assert text_eq(added,created);
+    let again=with_dependencies(&added,&one); assert text_eq(again,added);
+    let folder="C:\\work\\My App\\"; let name=package_name(&folder); let clean="my_app"; assert text_eq(name,clean);
+    let scaffold=manifest_text(&clean); let section="[dependencies]"; assert contains(scaffold,section);
+}

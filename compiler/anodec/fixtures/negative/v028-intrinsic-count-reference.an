@@ -1,0 +1,1 @@
+fn main(){let value=9;let computed=shl(u8(1),&value);}

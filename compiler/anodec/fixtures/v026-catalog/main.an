@@ -1,0 +1,20 @@
+mod model;
+fn rewrite(names:&mut [model::Names]) { for name in &mut names { name=concat(name,"!"); } }
+fn inspect(names:&[model::Names])->int { let mut total=0;for name in &names { total=total+len(name); }return total; }
+fn work(fail:bool)->model::Result {
+    let mut names=model::Names();push(names,"alpha");push(names,"beta");push(names,"gamma");push(names,"delta");
+    let mut entries=model::Entries();let h=alloc(entries,model::Entry{name:"catalog",weight:7});let mut handles=model::Handles();push(handles,h);
+    let mut left=west::model::Scores();push(left,10);push(left,20);push(left,30);let mut right=east::model::Scores();push(right,1);push(right,2);push(right,3);
+    let mut rows=west::model::Metrics();push(rows,west::model::metric("summary",0));
+    let mut total=0;
+    borrow mut middle=region(names,1,2) { rewrite(&mut middle);replace(&mut middle,0,"changed");borrow final=region(middle,1,1) { total=inspect(&final); }swap(&mut middle,0,1);borrow value=at(middle,0) { print value; } }
+    borrow all=region(names,0,len(names)) { total=total+inspect(&all); }
+    borrow all=region(left,0,3) { total=total+west::sum(&all); }
+    borrow mut all=region(right,0,3) { let accepted=try east::interior(&mut all,4);assert accepted==3;total=total+east::sum(&all); }
+    borrow mut row=at(rows,0) { row.score=total;row.label="scored"; }let copy=clone(rows);borrow row=at(copy,0) { print row.label;total=row.score; }
+    let values=[10,20,30,40];borrow legacy=region(values,1,3) { assert len(legacy)==2;total=total+at(legacy,1); }
+    let word="café";borrow view=region(word,0,5) { print to_text(view); }
+    let saved=clone_get(entries,h);total=total+saved.weight;let freed=free(entries,h);assert freed;
+    if fail { let ignored=try west::checked(-1);total=total+ignored; }return model::Result::Ready(total);
+}
+fn main() { match work(false){model::Result::Ready(n)=>{print n;}model::Result::Failed(message)=>{print message;}}match work(true){model::Result::Ready(n)=>{print n;}model::Result::Failed(message)=>{print message;}} }

@@ -1,0 +1,5 @@
+mod helper;
+
+pub fn twice(value:int)->int {
+    return helper::double(value);
+}

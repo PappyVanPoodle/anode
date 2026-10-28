@@ -1,0 +1,2 @@
+fixtures/negative/try-move.an:byte 93: use after move: value
+frontend rejected input

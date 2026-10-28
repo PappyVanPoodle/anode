@@ -1,0 +1,6 @@
+// Generated code deliberately has a checked runtime call limit of 512.
+fn descend(value:int)->int {
+    if value==0 { return 0; }
+    return 1+descend(value-1);
+}
+fn main() { print descend(parse_int(arg(0))); }

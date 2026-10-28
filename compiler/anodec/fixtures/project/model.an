@@ -1,0 +1,2 @@
+pub struct Value { number:int }
+pub fn read(value:&Value)->int { return value.number; }

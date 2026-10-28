@@ -1,0 +1,2 @@
+fixtures/negative/v028-intrinsic-bool.an:byte 24: integer intrinsic requires integer operands
+frontend rejected input

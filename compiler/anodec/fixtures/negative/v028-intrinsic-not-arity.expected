@@ -1,0 +1,2 @@
+fixtures/negative/v028-intrinsic-not-arity.an:byte 27: argument count for bit_not
+frontend rejected input

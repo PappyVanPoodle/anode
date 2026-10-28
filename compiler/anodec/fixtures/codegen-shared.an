@@ -1,0 +1,9 @@
+struct Value { items:ints, cursor:int, label:text }
+fn read(items:&ints,cursor:int,again:&ints)->int { return at(items,cursor)+len(again); }
+fn change(value:&mut Value)->text { value.label="changed";return "tail"; }
+fn main() {
+    let mut value=Value{items:[7],cursor:0,label:"head"};print read(&value.items,value.cursor,&value.items);
+    let copied=clone(value.label);let suffix=change(&mut value);let combined=concat(copied,suffix);print combined;print value.label;
+    match try_read_text("fixtures/positive.an") { ReadResult::Ok(source)=>{print len(source)>0;} ReadResult::Err(message)=>{assert false;} }
+    match try_read_text("fixtures/does-not-exist.an") { ReadResult::Ok(source)=>{assert false;} ReadResult::Err(message)=>{print len(message)>0;} }
+}

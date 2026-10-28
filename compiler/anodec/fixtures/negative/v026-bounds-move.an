@@ -1,0 +1,1 @@
+vector V(int);fn change(v:&mut V)->int{push(v,2);return 0;}fn main(){let mut v=V();push(v,1);borrow window=region(v,change(&mut v),1){print len(window);}}

@@ -1,0 +1,1 @@
+vector V(int);struct Stored{view:&[V]}fn main(){}

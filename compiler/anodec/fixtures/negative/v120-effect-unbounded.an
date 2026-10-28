@@ -1,0 +1,4 @@
+// bounded rejects every while loop, even one that always terminates.
+@effect(no_alloc, no_io, bounded)
+fn scan(frame:&[u8;8])->int { let mut i=0; while i<8 && at(frame,i)!=u8(0) { i=i+1; } return i; }
+fn main(){let frame=[u8(3);8];print scan(&frame);}
