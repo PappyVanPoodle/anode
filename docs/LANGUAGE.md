@@ -2,7 +2,7 @@
 
 ## 1.3: OS/runtime primitives and block campaigns
 
-1.3 adds six builtins and no types. They use `int`, `bool`, `text`, byte buffers and the existing `NetResult`, so every program keeps its type ids. A program that calls none of them compiles to the same native code and the same C as under 1.2. The six names are reserved. All six perform I/O, so `requires`/`ensures`/`assert` reject them.
+1.3 adds eight builtins and no types: the six OS/runtime builtins in the table, plus `keys` and `http_request` (described after it). They use `int`, `bool`, `text`, `texts`, `ints`, byte buffers and the existing `NetResult`, so every program keeps its type ids. A program that calls none of them compiles to the same native code and the same C as under 1.2. The six table names and `http_request` are reserved; `keys` is contextual. All eight allocate or perform I/O, so `requires`/`ensures`/`assert` reject them.
 
 | Builtin | Capability | Effects |
 | --- | --- | --- |
@@ -39,6 +39,18 @@ Paths, names, endpoints and reply bodies are borrowed `text` or `str`. A path or
 - **Failures** are always `Error` values, never faults. They cover invalid status, timeout, bind failure and invalid request. The texts start with `net_serve_once`.
 
 A spawned server and an in-program client work together: `let s = spawn serve(...)` in a worker that returns `net_serve_once(...)`, then `net_request` from the caller, then `join(s)`. The client should retry, because a connection refused before the server binds is an ordinary `Error`.
+
+**Map keys.** `keys(m)` returns a new collection of the keys of a map whose key type is `text` (as `texts`) or `int` (as `ints`). Text keys are copied. The map is only borrowed and stays usable. The order is the map's internal slot order: unspecified, though it does not change while the map is unchanged. Other key types report "keys requires a map with text or int keys". `keys` allocates, so contracts and `@effect(no_alloc)` reject it; it is `no_io` and `bounded`. Like `contains_key`, it is a contextual name: a user function called `keys` keeps its meaning.
+
+**External HTTP.** `http_request(url, body) -> NetResult` sends one request to an `http://` or `https://` URL through Windows WinHTTP, using the system proxy settings. `net_request` is unchanged and still reaches only loopback endpoints.
+- It sends `GET` when `body` is empty and `POST` otherwise. A non-empty body goes out as `application/json` when its first non-space character is `{` or `[`, else as `text/plain; charset=utf-8`. No other headers can be set.
+- `loopback://` URLs are passed to `net_request`.
+- The URL is checked before any network activity. The host must be ASCII (use punycode for international names; IPv6 goes in brackets), the port 1–65535, and the path and query printable ASCII without spaces (percent-encode anything else). User info (`user@host`) is rejected; a `#fragment` is dropped.
+- The request and the response are each limited to 16 MiB, and the response must be strict UTF-8 without NUL. Timeouts are 10 s to resolve, 10 s to connect, and 30 s each to send and receive.
+- It needs `[capabilities] net = true`, like `net_request`. It performs I/O, allocates and is never `bounded`. Every failure is an `Error` value whose text starts with `http_request`.
+- `winhttp.dll` is loaded on the first request, so a program gains no new DLL import.
+
+**Source limits.** A source file may be up to 16 MiB and a whole project up to 256 MiB (previously 1 MiB and 8 MiB).
 
 **Agent campaigns with block candidates.** `verify_batch`, `commit_holes` and `verify_campaign` now accept `"kind": "block"` candidates, as `verify_holes` already did.
 - **How a block is applied:** each block is a braced body with an explicit `"captures"` array (possibly empty) of `{name, type, borrow}`. It becomes a signature-locked private helper `fn anode_synthesis_<index>_<nonce>(...)`, appended at the end of the file and called at the hole with the captured values.
@@ -389,7 +401,7 @@ The complete backing map is protected while a value alias is live. A shared alia
 
 Maps move, return, deep-clone and drop under the normal owner rules, including ownership transfer to a worker. Scope exit, return, break, continue, replacement and consuming matches retain typed cleanup. `len`, `contains_key`, scoped `get` and scalar `clone_get` can be used by `no_alloc,no_io` functions when their argument expressions and body also satisfy those effects. `remove` is nonallocating but mutating, so assertions/contracts reject it. Assertions/contracts also reject insertion and owned-value `clone_get`; bind effectful results before asserting. An allocating text literal or key conversion still counts as allocation even when the lookup itself does not allocate.
 
-Storage uses checked open addressing with hash lookup, growth and tombstone reuse. Capacity, allocation-size and probe bounds are checked in native and C builds; failure remains controlled in optimized builds. Hashing is deterministic and not randomized against adversarial inputs. The language exposes neither bucket order nor map iteration, capacity/reserve, custom hash/equality, generic type parameters or reference-returning entry APIs. `map` is reserved; `contains_key`, `insert`, `remove` and `clone_get` are contextual builtins, with existing user functions of the same name retaining precedence.
+Storage uses checked open addressing with hash lookup, growth and tombstone reuse. Capacity, allocation-size and probe bounds are checked in native and C builds; failure remains controlled in optimized builds. Hashing is deterministic and not randomized against adversarial inputs. Since 1.3, `keys(m)` lists the keys of `text`- and `int`-keyed maps (see the 1.3 section); otherwise the language exposes neither bucket order nor map iteration, capacity/reserve, custom hash/equality, generic type parameters or reference-returning entry APIs. `map` is reserved; `contains_key`, `insert`, `remove` and `clone_get` are contextual builtins, with existing user functions of the same name retaining precedence.
 
 The [four-module symbol resolver](examples/symbol-resolver/README.md) reads a small source file, resolves lexical scopes and shadowing, and reports unknown/duplicate declarations. Integer scope maps own text symbol maps containing records, enum metadata and typed reference vectors. Its queries have checked effect/view contracts; stress tests exercise map growth, removal/reinsertion, deep copies and worker ownership. This is a compiler building block written in Anode; the compiler remains the Rust seed.
 
@@ -862,7 +874,7 @@ Text built-ins borrow their arguments during evaluation; their owned results mus
 
 `run PROJECT -- arg1 arg2` passes arguments to the executable. `build`, `check`, `test`, `emit-c`, `review` and `review-prompt` accept project directories or `.zn` files. Omit the project inside a directory with `Zenith.toml`. Project output names are stable under `.zenith/build/`; `--rebuild` bypasses executable/module reuse. Even an unchanged-output build checks source ownership/types/capabilities first. `storage` reports artifacts; `clean` removes known managed outputs and `clean --cache` also evicts shared module objects.
 
-Compiler input is limited to 1 MiB per source file and 8 MiB total, with bounded nesting/expression depth, module depth and module count. These are explicit prototype limits rather than resource-safety guarantees for arbitrary compilation workloads.
+Compiler input is limited to 16 MiB per source file and 256 MiB total (1 MiB and 8 MiB before 1.3), with bounded nesting/expression depth, module depth and module count. These are explicit limits rather than resource-safety guarantees for arbitrary compilation workloads.
 
 ## Owned records and tagged enums (0.5)
 

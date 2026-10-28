@@ -1,5 +1,8 @@
 # Build output from anode check/test/run
 .zenith/
 
+# Cargo build output for compiler/ and compiler/tools/anode-lsp/
+target/
+
 # The SDK zip is a GitHub Release asset, not repository content
 *.zip

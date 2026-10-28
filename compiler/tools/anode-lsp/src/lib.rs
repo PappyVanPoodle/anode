@@ -1,0 +1,12 @@
+pub mod compiler;
+pub mod diagnostics;
+pub mod formatting;
+pub mod hover;
+pub mod lsp;
+pub mod mock_compiler;
+pub mod navigation;
+pub mod project;
+pub mod server;
+pub mod signature;
+pub mod unicode;
+pub mod verification;

@@ -19,6 +19,8 @@ anode doctor                # toolchain report (MSVC location, backends)
 anode new my_app            # new project: Anode.toml, src/, .gitignore, AGENTS.md, CLAUDE.md
 ```
 
+Source limits: 16 MiB per file and 256 MiB per project.
+
 **Standard library.** The 8 pure-`.an` packages (`cli`, `encoding`, `csv_jsonl`, `markdown`, `glob_regex`, `json`, `docgen`, `bench`) live in `$ANODE_HOME/packages/` (`packages/` in the SDK bundle). Import them as path dependencies in `Anode.toml`; the path is relative to that `Anode.toml` (absolute paths also work). There is no `packages = [...]` key:
 ```toml
 [dependencies]
@@ -185,6 +187,14 @@ fn use_map() -> int {
     return 0;
 }
 ```
+- **Listing keys:** `keys(m)` returns the keys of a `text`-keyed map as `texts`, or of an `int`-keyed map as `ints`. Text keys are copied, the order is unspecified, and the map stays usable. Other key types are rejected. It allocates, so it is not allowed under `@effect(no_alloc)` or in contracts.
+  ```anode
+  let names = keys(m);
+  for i in 0..len(names) {
+      let name = text_at(names, i);
+      let score = clone_get(m, name);
+  }
+  ```
 
 ### 3.4 Generational `arena Name(NodeType);` and `id(Name)`
 Use `arena` instead of recursive pointers/lifetimes for ASTs, JSON trees, DOMs, and graphs:
@@ -351,6 +361,11 @@ enum NetResult { Response(NetResponse), Error(text) }
 - **Server (`net_serve_once(endpoint, status, reply_body) -> NetResult`, `v1.3.0`):**
   - In-memory route: `loopback://serve/<request_payload>` -> returns `Response(NetResponse { status, body: "<request_payload>" })`.
   - Socket routes: `http://127.0.0.1:<port>/<path>` (binds, accepts 1 HTTP request, replies with `status` + `reply_body`, returns request body in `Response.body`) and `tcp://127.0.0.1:<port>` (`status == 0`).
+- **External HTTP(S) (`http_request(url, body) -> NetResult`, also requires `net = true`):**
+  - Any `http://` or `https://` host, through Windows WinHTTP with the system proxy settings. `net_request` above still reaches only loopback endpoints.
+  - `GET` when `body` is empty, `POST` otherwise. A body whose first non-space character is `{` or `[` is sent as `application/json`, anything else as `text/plain; charset=utf-8`. Custom headers are not supported.
+  - The URL is checked before any I/O: ASCII host (punycode for international names, IPv6 in brackets), port 1–65535, printable-ASCII path and query (percent-encode anything else), no `user@host`. `loopback://` URLs are passed to `net_request`.
+  - Request and response are limited to 16 MiB each; the response must be UTF-8 without NUL. Timeouts: 10 s resolve, 10 s connect, 30 s send, 30 s receive. Failures are `Error` values starting with `http_request`.
 
 ---
 

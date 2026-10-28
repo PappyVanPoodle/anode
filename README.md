@@ -10,8 +10,9 @@ Anode is a compiled systems language for Windows x64. Source files use the `.an`
 - A function can list the struct fields it may use (`&mut Counter.{ mut value, step }`), declare effects it must not have (`@effect(no_alloc, no_io, bounded)`), and state `requires` / `ensures` conditions. The compiler checks all three.
 - Arithmetic, array bounds and number conversions are checked in every build mode.
 - `anode run` builds with Cranelift. `anode build --release` generates C and compiles it with MSVC.
+- Programs can call `http://` and `https://` endpoints with `http_request(url, body)` when `net = true` is set in `Anode.toml`, and list a map's keys with `keys(m)`. A source file may be up to 16 MiB and a project up to 256 MiB.
 
-Version **1.3.0** · [Download](https://github.com/PappyVanPoodle/anode/releases/latest) · [Language guide](AGENTS.md) · [Standard library API](docs/API-DOCS.md)
+Version **1.3.0** · MIT License · [Download](https://github.com/PappyVanPoodle/anode/releases/latest) · [Language guide](AGENTS.md) · [Standard library API](docs/API-DOCS.md) · [Compiler source](https://github.com/PappyVanPoodle/anode/tree/main/compiler)
 
 ## Example
 
@@ -261,11 +262,13 @@ Stats scan(const char *src, size_t len) {
 
 ## Tests
 
-- 617 compiler tests pass in the 1.3.0 release run (62 test targets). The test for the `AGENTS.md` / `CLAUDE.md` scaffolding was added afterwards and passes in its own target.
+- 617 compiler tests passed in the 1.3.0 release run (62 test targets). Several features were added after that run: the `AGENTS.md` / `CLAUDE.md` files written by `anode new`, `keys`, `http_request` and the larger source limits. Their tests are in the 1.3 runtime test target, which passes on the current build (10 tests, including `keys` on the native, C and AddressSanitizer builds and `http_request` round trips through WinHTTP). The full suite has not been rerun since these additions.
 - The compiler frontend written in Anode was built in three stages; Stage 1, 2 and 3 produce identical C (796,798 bytes).
 - The standard library and the showcase have 35 tests: 31 in the packages and 4 that combine packages.
 
-## Third-party licenses
+## License
+
+Anode, its standard library packages and the compiler source are released under the [MIT License](LICENSE).
 
 The Windows SDK includes third-party components, including Cranelift and the Rust standard library. Their license terms and notices are in [THIRD-PARTY/README.txt](THIRD-PARTY/README.txt).
 
@@ -273,6 +276,7 @@ The Windows SDK includes third-party components, including Cranelift and the Rus
 
 ```text
 README.md               this page
+LICENSE                 MIT License
 AGENTS.md  CLAUDE.md    guides for code assistants (also written by `anode new`)
 install.ps1             per-user installer (ships inside the release zip next to bin\)
 assets/                 logo and icon
@@ -280,7 +284,8 @@ THIRD-PARTY/            notices for third-party components in the SDK
 docs/                   API-DOCS.md, BENCHMARK.md, LANGUAGE.md, SAFETY.md
 packages/               the eight standard library packages
 examples/               stdlib-showcase
+compiler/               Rust source of the compiler and language server (repository only)
 site/                   GitHub Pages landing page (repository only)
 ```
 
-The compiler binaries (`anode.exe`, `zn.exe`, `anode-lsp.exe`) ship only in the release zip. Further reading: [docs/LANGUAGE.md](docs/LANGUAGE.md) (language reference by release) and [docs/SAFETY.md](docs/SAFETY.md) (safety boundary and capability model).
+The compiler binaries (`anode.exe`, `zn.exe`, `anode-lsp.exe`) ship in the release zip; [compiler/](https://github.com/PappyVanPoodle/anode/tree/main/compiler) has their source and build steps. Further reading: [docs/LANGUAGE.md](docs/LANGUAGE.md) (language reference by release) and [docs/SAFETY.md](docs/SAFETY.md) (safety boundary and capability model).
