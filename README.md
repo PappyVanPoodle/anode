@@ -4,102 +4,133 @@
 
 # anode.an
 
-Anode is a compiled systems language for Windows x64. Source files use the `.an` extension.
+Anode is a compiled systems language for Windows, Linux and macOS. Source files use the `.an` extension. Its compiler, `anodec`, is written in Anode and compiles itself.
 
-- The syntax is close to Rust, with ownership and moves, but there are no lifetime annotations. A view into a string or buffer exists only inside the `borrow` block that created it.
-- A function can list the struct fields it may use (`&mut Counter.{ mut value, step }`), declare effects it must not have (`@effect(no_alloc, no_io, bounded)`), and state `requires` / `ensures` conditions. The compiler checks all three.
-- Arithmetic, array bounds and number conversions are checked in every build mode.
-- `anode run` builds with Cranelift. `anode build --release` generates C and compiles it with MSVC.
-- `anodec` is a second compiler, written in Anode, that compiles itself. It supports a subset of the language, adds `{ std = true }` dependencies and `--debug` builds with a `.pdb`, and generates C for MSVC. See [anodec](#anodec).
-- Programs can call `http://` and `https://` endpoints with `http_request(url, body)`, or `http_request(url, body, headers)` to send headers such as `Authorization`, when `net = true` is set in `Anode.toml`. `keys(m)` lists a map's keys. A source file may be up to 16 MiB and a project up to 256 MiB.
+- **Ownership without lifetimes:** the syntax is close to Rust, with ownership and moves, but there are no lifetime annotations. A borrowed element or region exists only inside the `borrow` block that created it.
+- **Interfaces and generics:** `interface Shape` with `impl Shape for Rect`, and generic functions such as `fn larger<A: Shape, B: Shape>`. A generic function is compiled separately for each type it is called with, so its calls are direct.
+- **Effects:** `@effect(no_alloc, no_io, bounded)` states that a function never allocates, does no I/O and always finishes. The compiler checks it through every call, including calls through interfaces and function values.
+- **Checked arithmetic:** arithmetic, array bounds and number conversions are checked in every build.
+- **C as the backend:** `anodec` generates C and compiles it with MSVC, clang-cl, clang, gcc or cc. Programs can call C libraries through `extern "C"`.
 
-Version **1.3.0** · MIT License · [Download](https://github.com/PappyVanPoodle/anode/releases/latest) · [Language guide](AGENTS.md) · [Standard library API](docs/API-DOCS.md) · [Compiler source](https://github.com/PappyVanPoodle/anode/tree/main/compiler)
+Version **2.0.0** · MIT License · [Download](https://github.com/PappyVanPoodle/anode/releases/latest) · [Language guide](AGENTS.md) · [Standard library API](docs/API-DOCS.md) · [Benchmarks](benchmarks/README.md)
 
 ## Example
 
 ```anode
-pub struct Counter {
-    value: int,
-    step: int,
-    label: text
+pub interface Shape {
+    @effect(no_alloc, no_io, bounded)
+    fn area(self: &Self) -> int;
 }
-// May read `step` and write `value`; nothing else in Counter is reachable.
+pub struct Rect { width: int, height: int }
+pub struct Square { side: int }
+impl Shape for Rect {
+    @effect(no_alloc, no_io, bounded)
+    fn area(self: &Self) -> int { return self.width * self.height; }
+}
+impl Shape for Square {
+    @effect(no_alloc, no_io, bounded)
+    fn area(self: &Self) -> int { return self.side * self.side; }
+}
+// Compiled once for each pair of types it is called with; area() calls are direct.
 @effect(no_alloc, no_io, bounded)
-pub fn advance(c: &mut Counter.{ mut value, step }) -> int requires c.step > 0 && c.value >= 0;
-ensures result > 0;
-{
-    c.value = c.value + c.step;
-    return c.value;
+fn larger<A: Shape, B: Shape>(a: &A, b: &B) -> int {
+    let x = a.area();
+    let y = b.area();
+    if x > y { return x; }
+    return y;
 }
 fn main() {
-    let mut c = Counter { value: 0, step: 3, label: "ticks" };
-    let v = advance(&mut c);
-    print concat(concat(c.label, " = "), int_text(v));
+    let r = Rect { width: 3, height: 4 };
+    let s = Square { side: 5 };
+    print larger(&r, &s);
 }
 ```
 
-If `advance` also assigned `c.label`, `anode check` would reject it:
+`anodec run .` prints `25`. If `Rect`'s `area` left out the `@effect` line, `anodec check` would reject the program:
 
 ```text
-view contract for m0_advance.c does not permit mutation at field path [2]; narrow the helper call or declare that field
+./src/main.an:8: method area of impl main::Shape for main::Rect must declare @effect(no_alloc, no_io, bounded) like the interface
 ```
+
+## Speed compared with Rust
+
+<p align="center">
+  <img src="assets/benchmarks-2.0.svg" alt="Bar charts comparing Anode 2.0 and Rust 1.99 on four programs. Type-check: Anode 2.7 times faster. Debug build: Rust 1.8 times faster. Release build: Rust 3.0 times faster. Runtime: Rust 7.7 times faster. Executable size: Anode 2.8 times smaller." width="100%">
+</p>
+
+Four programs, written once in Anode and once in idiomatic Rust, print identical output.
+
+- **Anode wins:** it type-checks 2.7× faster, and its executables are 2.8× smaller.
+- **Rust wins:** it builds faster (1.8× for debug builds and 3.0× for release builds), and its programs run 7.7× faster.
+
+Anode 2.0 compiles every value to a tagged, boxed value, and it checks integer overflow and bounds in every build. Rust's release builds do not check overflow. [benchmarks/](benchmarks/README.md) has the programs, every number and how to rerun them.
 
 ## Install
 
-You need Windows 10 or 11 (x64) and Visual Studio 2022 Build Tools with the C++ workload. Anode links executables with MSVC's `link.exe`, and uses `cl.exe` for `--release`, `--sanitize` and the C backend.
+Download the archive for your platform from the [latest release](https://github.com/PappyVanPoodle/anode/releases/latest):
 
-1. Download [`anode-1.3.0-windows-x64.zip`](https://github.com/PappyVanPoodle/anode/releases/latest/download/anode-1.3.0-windows-x64.zip) from [Releases](https://github.com/PappyVanPoodle/anode/releases/latest) and extract it, for example to `C:\Tools\anode-1.3.0-windows-x64`.
-2. Run the installer from that folder. It adds `bin\` to your user `PATH` and sets `ANODE_HOME`. It does not copy files or need administrator rights. `-WhatIf` shows what it would change; `-Uninstall` removes the changes.
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\install.ps1
-   ```
-3. Open a new terminal:
-   ```powershell
-   anode new hello_anode
-   cd hello_anode
-   anode run .
-   ```
+| Archive | Runs on |
+| :--- | :--- |
+| `anode-2.0.0-windows-x64.zip` | Windows 10 or 11, x64 |
+| `anode-2.0.0-linux-x64.tar.gz` | Linux x64 with glibc 2.34 or newer: Ubuntu 22.04+, Debian 12+, RHEL, Rocky or Alma 9+, Fedora 35+ |
+| `anode-2.0.0-macos-arm64.tar.gz` | macOS 11 or newer on Apple silicon |
+
+Anode compiles your program to C, so you also need a C compiler.
+
+- **Windows:** Visual Studio Build Tools with the **Desktop development with C++** workload. Extract the zip, for example to `C:\Tools\anode-2.0.0-windows-x64`, then in PowerShell:
+
+  ```powershell
+  $sdk = "C:\Tools\anode-2.0.0-windows-x64"
+  [Environment]::SetEnvironmentVariable("ANODE_HOME", $sdk, "User")
+  [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$sdk\bin", "User")
+  ```
+
+- **Linux:** clang or gcc (`sudo apt install clang`). Then:
+
+  ```bash
+  tar -xzf anode-2.0.0-linux-x64.tar.gz -C ~
+  echo 'export ANODE_HOME="$HOME/anode-2.0.0-linux-x64"' >> ~/.bashrc
+  echo 'export PATH="$ANODE_HOME/bin:$PATH"' >> ~/.bashrc
+  ```
+
+- **macOS:** Apple's clang (`xcode-select --install`). Then:
+
+  ```bash
+  tar -xzf anode-2.0.0-macos-arm64.tar.gz -C ~
+  echo 'export ANODE_HOME="$HOME/anode-2.0.0-macos-arm64"' >> ~/.zshrc
+  echo 'export PATH="$ANODE_HOME/bin:$PATH"' >> ~/.zshrc
+  ```
+
+  The binaries are not signed. If macOS refuses to open `anodec`, run `xattr -dr com.apple.quarantine ~/anode-2.0.0-macos-arm64`.
+
+Open a new terminal, run `anodec doctor` to confirm it found your C compiler, and try a first program:
+
+```
+anodec new hello
+cd hello
+anodec run
+```
 
 ## Commands
 
 | Command | What it does |
 | :--- | :--- |
-| `anode new NAME` | Creates a project: `Anode.toml`, `src/`, `.gitignore`, `AGENTS.md`, `CLAUDE.md` |
-| `anode check . --json` | Type, ownership, borrow, field-view and effect checks; diagnostics as JSON |
-| `anode test . --jobs 4` | Runs the `test` blocks, 4 at a time |
-| `anode run . -- ARGS` | Builds and runs the program |
-| `anode build . -o app.exe` | Builds an executable; add `--release` for the MSVC build |
-| `anode fmt .` | Formats the sources |
-| `anode verify . --json` | Evaluates `requires` / `ensures` on sampled inputs without building |
-| `anode doctor` | Shows which MSVC installation is used |
-
-On the 9-file standard library showcase, `anode check` takes about 23 ms, and running its 35 tests after an edit takes about 0.27 s.
-
-### anodec
-
-`bin\anodec.exe` is a second compiler, written in Anode ([compiler/anodec](https://github.com/PappyVanPoodle/anode/tree/main/compiler/anodec)). The copy in the zip was built by `anodec` itself. It generates C and compiles it with `cl.exe`.
-
-| Command | What it does |
-| :--- | :--- |
-| `anodec new DIR` | Creates `Anode.toml`, `src/main.an`, `AGENTS.md` and `CLAUDE.md` |
-| `anodec add json cli` | Adds `json = { std = true }` and `cli = { std = true }` to `[dependencies]` |
-| `anodec check . --json` | Checks the project; diagnostics with file and line |
+| `anodec new NAME` | Creates a project: `Anode.toml`, `src/main.an`, `AGENTS.md` and `CLAUDE.md` |
+| `anodec add json cli` | Adds standard packages to `[dependencies]` as `json = { std = true }` |
+| `anodec check . --json` | Type, ownership, borrow and effect checks; diagnostics with file and line |
 | `anodec test .` | Runs each `test` block in its own process |
-| `anodec run . -- ARGS` | Builds `.zenith\build\<name>.exe`, runs it and returns its exit code |
-| `anodec build . -o app.exe --debug` | Builds with `/Od /Zi` and `#line` directives, and writes `app.pdb` |
+| `anodec run . -- ARGS` | Builds and runs the program and returns its exit code |
+| `anodec build . -o app` | Builds an executable; `--release` optimizes it, `--debug` adds debugger information |
+| `anodec doctor` | Shows `ANODE_HOME`, the C runtime, the C compiler and the standard packages; `--json` for tools |
+| `anodec version` | Prints the version |
 
-`anodec` covers less of the language than `anode`. It has no field views, `requires` / `ensures`, threads, network builtins, binary file I/O or `??` holes. It also accepts two things `anode` 1.3.0 rejects: `for x in &c` over `ints`, `texts`, `[T; N]` and map keys, and `concat` with up to 16 arguments. It finds MSVC through `anode`'s cached toolchain, or through vswhere. [compiler/anodec/README.md](https://github.com/PappyVanPoodle/anode/blob/main/compiler/anodec/README.md) has the details and the build steps.
+`anode` in the same `bin` folder is the same compiler under a second name. `anodec` uses MSVC by default on Windows. To use another C compiler, set `ANODE_CC` to `clang-cl`, `clang`, `gcc` or `cc` before your first build.
 
 ## Standard library
 
-`packages/` has eight libraries written in Anode. None of them may read files, start processes or use the network. Add them to a project as path dependencies; the path is relative to your `Anode.toml`, or absolute:
+`packages/` has eight libraries written in Anode. None of them may read files, start processes or use the network. `anodec add json` adds `json = { std = true }` to `Anode.toml`, which finds the package in `$ANODE_HOME/packages`.
 
-```toml
-[dependencies]
-json = { path = "C:/Tools/anode-1.3.0-windows-x64/packages/json" }
-```
-
-With `anodec`, `anodec add json` writes `json = { std = true }` instead, which finds the package in `%ANODE_HOME%\packages`. `anode` 1.3.0 does not read that form yet. Under `anodec`, `bench`, `cli`, `csv_jsonl`, `docgen`, `glob_regex` and `json` build and pass their tests; `encoding` and `markdown` need `anode`.
+Six of them build and pass their tests under 2.0: `bench`, `cli`, `csv_jsonl`, `docgen`, `glob_regex` and `json`. `encoding` and `markdown` still need the 1.3 compiler (see [Earlier releases](#earlier-releases)).
 
 | Package | Contents |
 | :--- | :--- |
@@ -112,28 +143,17 @@ With `anodec`, `anodec add json` writes `json = { std = true }` instead, which f
 | [`docgen`](packages/docgen/src/lib.an) | Markdown API documentation from `.an` source files |
 | [`bench`](packages/bench/src/lib.an) | Min, median, 95th percentile and max of timing samples; Markdown and JSON reports |
 
-[docs/API-DOCS.md](docs/API-DOCS.md) lists all 72 public items; it was generated with `docgen`. [docs/BENCHMARK.md](docs/BENCHMARK.md) has timings from the development machine: about 62 µs for a CRC-32 of 3.5 KB, 0.5 µs to glob-match 8 paths and 3.8 µs to parse a 261-byte JSON document. The clock there moves in 15 ms steps, so these are rough.
-
-[examples/stdlib-showcase](examples/stdlib-showcase) uses all eight packages, plus binary file I/O and the in-memory loopback server:
-
-```powershell
-cd examples\stdlib-showcase
-anode test . --jobs 4
-anode run .
-anode run . -- doc      # writes .zenith\API-DOCS.md
-anode run . -- bench    # writes .zenith\BENCHMARK.md and .json
-```
+[docs/API-DOCS.md](docs/API-DOCS.md) lists all 72 public items; it was generated with `docgen`.
 
 ## Compared with C and Rust
 
-The same line scanner written three ways. It reads `label|amount` lines, skips blank and `#` lines, and counts rows, the total and malformed lines. All three were compiled (MSVC `/W4`, `rustc` 2021 edition, `anode`) and print `2 10 1` for `"# c\nalpha|12\nbad\nb|-2\n"`.
+The same line scanner written three ways. It reads `label|amount` lines, skips blank and `#` lines, and counts rows, the total and malformed lines. All three were compiled (MSVC `/W4`, `rustc` 2021 edition, `anodec` 2.0) and print `2 10 1` for `"# c\nalpha|12\nbad\nb|-2\n"`.
 
 | | C | Rust | Anode |
 | :--- | :--- | :--- | :--- |
-| Buffer bounds | Checked by hand (`digits[32]`) | Checked | Checked (`region` views) |
+| Buffer bounds | Checked by hand (`digits[32]`) | Checked | Checked (`byte_at`) |
 | Lifetime annotations | — | `Entry<'a>`, `parse<'a>` | None |
 | No allocation / no I/O / terminates, stated in the signature | No | No | `@effect(no_alloc, no_io, bounded)` |
-| Pre- and postconditions | Comments | Comments or `debug_assert!` | `requires` / `ensures`, checked on every call |
 | Signed integer overflow | Undefined behavior | Panics in debug builds, wraps in release builds | Stops the program in every build |
 
 <details open>
@@ -145,35 +165,37 @@ pub struct Stats {
     total: int,
     errors: int
 }
-// Folds one "label|amount" line into `s`: no heap, no I/O, always finishes.
+// Folds the line src[start..end) into `s`: no allocation, no I/O, always finishes.
 @effect(no_alloc, no_io, bounded)
-fn add_line(line: &str, s: &mut Stats.{ mut rows, mut total, mut errors }) {
-    for i in 0..len(line) {
-        if byte_at(line, i) == 124 {
-            borrow digits = region(line, i + 1, len(line)) {
-                if i > 0 && is_int(digits) {
-                    s.rows = s.rows + 1;
-                    s.total = s.total + parse_int(digits);
-                    return;
-                }
+fn add_line(src: &text, start: int, end: int, s: &mut Stats) {
+    for i in start..end {
+        if byte_at(src, i) == 124 {
+            let mut pos = i + 1;
+            let mut negative = false;
+            if pos < end && byte_at(src, pos) == 45 { negative = true; pos = pos + 1; }
+            if i == start || pos == end { break; }
+            let mut amount = 0;
+            for j in pos..end {
+                let digit = byte_at(src, j) - 48;
+                if digit < 0 || digit > 9 { s.errors = s.errors + 1; return; }
+                amount = amount * 10 + digit;
             }
-            break;
+            if negative { amount = 0 - amount; }
+            s.rows = s.rows + 1;
+            s.total = s.total + amount;
+            return;
         }
     }
     s.errors = s.errors + 1;
 }
 @effect(no_alloc, no_io, bounded)
-pub fn scan(src: &str) -> Stats requires len(src) <= 16777216;
-ensures result.rows + result.errors <= len(src);
-{
+pub fn scan(src: &text) -> Stats {
     let mut s = Stats { rows: 0, total: 0, errors: 0 };
     let mut start = 0;
     for i in 0..len(src) + 1 {
         if i == len(src) || byte_at(src, i) == 10 {
             if i > start && byte_at(src, start) != 35 {
-                borrow line = region(src, start, i) {
-                    add_line(&line, &mut s);
-                }
+                add_line(&src, start, i, &mut s);
             }
             start = i + 1;
         }
@@ -276,35 +298,48 @@ Stats scan(const char *src, size_t len) {
 
 ## AGENTS.md and CLAUDE.md
 
-`anode new` writes `AGENTS.md` and `CLAUDE.md` into every new project, for code assistants working in it. [AGENTS.md](AGENTS.md) covers how the syntax differs from Rust, collections and borrows, field views and effects, every builtin, and the standard library; section 2.2 lists the mistakes the compiler rejects most often. [CLAUDE.md](CLAUDE.md) is a short checklist that points to it.
+`anodec new` writes `AGENTS.md` and `CLAUDE.md` into every new project, for code assistants working in it. [AGENTS.md](AGENTS.md) covers how the syntax differs from Rust, collections and borrows, effects, every builtin, and the standard library; section 2.2 lists the mistakes the compiler rejects most often. It was written for 1.3, so a few of the features it describes, such as field views and `requires` / `ensures`, need the 1.3 compiler. [CLAUDE.md](CLAUDE.md) is a short checklist that points to it.
 
 ## Tests
 
-- 617 compiler tests passed in the 1.3.0 release run (62 test targets). Several features were added after that run: the `AGENTS.md` / `CLAUDE.md` files written by `anode new`, `keys`, `http_request` and the larger source limits. Their tests are in the 1.3 runtime test target, which passes on the current build (10 tests, including `keys` on the native, C and AddressSanitizer builds and `http_request` round trips through WinHTTP). The full suite has not been rerun since these additions.
-- `anodec` has 50 tests, which pass under both `anode` and `anodec`. Stage 1 (built by `anode`), Stage 2 and 3 (built by `anodec`), and a fourth build of `anodec` by itself all produce identical C (988,327 bytes). For programs that do not use the new features, `anodec` produces the same C as the previous version of the frontend.
-- The standard library and the showcase have 35 tests: 31 in the packages and 4 that combine packages.
+- **Compiler:** 76 tests pass on Windows x64, Linux x64 and macOS ARM64 in continuous integration. On each platform, `anodec` also rebuilds itself and emits, byte for byte, the C it was built from.
+- **Standard library:** the six packages that build under 2.0 pass their 21 tests.
+
+## Earlier releases
+
+[Anode 1.3.0](https://github.com/PappyVanPoodle/anode/releases/tag/v1.3.0) shipped `anode`, an earlier compiler written in Rust, for Windows only. It is still available, and its source is in [compiler/](compiler).
+
+It supports a larger language than 2.0:
+
+- field views such as `&mut Counter.{ mut value }`;
+- `requires` / `ensures` conditions;
+- threads, `http_request` and binary file I/O;
+- `anode fmt`, `anode verify` and a Cranelift backend.
+
+[examples/stdlib-showcase](examples/stdlib-showcase) and [docs/LANGUAGE.md](docs/LANGUAGE.md) describe that release. 617 compiler tests passed in its release run.
 
 ## License
 
-Anode, its standard library packages and the compiler source are released under the [MIT License](LICENSE).
+Anode, its standard library packages and the compiler source in this repository are released under the [MIT License](LICENSE).
 
-The Windows SDK includes third-party components, including Cranelift and the Rust standard library. Their license terms and notices are in [THIRD-PARTY/README.txt](THIRD-PARTY/README.txt).
+The 1.3.0 Windows SDK includes third-party components, including Cranelift and the Rust standard library. Their license terms and notices are in [THIRD-PARTY/README.txt](THIRD-PARTY/README.txt).
 
 ## Repository layout
 
 ```text
 README.md               this page
 LICENSE                 MIT License
-AGENTS.md  CLAUDE.md    guides for code assistants (also written by `anode new`)
-install.ps1             per-user installer (ships inside the release zip next to bin\)
-assets/                 logo and icon
-THIRD-PARTY/            notices for third-party components in the SDK
+AGENTS.md  CLAUDE.md    guides for code assistants (also written by `anodec new`)
+install.ps1             per-user installer for the 1.3.0 Windows SDK
+assets/                 logo, icon and the benchmark chart
+benchmarks/             Anode 2.0 compared with Rust: programs, results and scripts
+THIRD-PARTY/            notices for third-party components in the 1.3.0 SDK
 docs/                   API-DOCS.md, BENCHMARK.md, LANGUAGE.md, SAFETY.md
 packages/               the eight standard library packages
-examples/               stdlib-showcase
-compiler/               Rust source of the compiler and language server; anodec/ is the
-                        Anode source of anodec (repository only)
-site/                   GitHub Pages landing page (repository only)
+examples/               stdlib-showcase (1.3)
+compiler/               Rust source of the 1.3 compiler and language server; anodec/ is the
+                        Anode source of anodec 1.4
+site/                   GitHub Pages landing page
 ```
 
-The compiler binaries (`anode.exe`, `zn.exe`, `anode-lsp.exe`, `anodec.exe`) ship in the release zip; [compiler/](https://github.com/PappyVanPoodle/anode/tree/main/compiler) has their source and build steps. Further reading: [docs/LANGUAGE.md](docs/LANGUAGE.md) (language reference by release) and [docs/SAFETY.md](docs/SAFETY.md) (safety boundary and capability model).
+The 2.0 compiler ships in the archives of the [2.0.0 release](https://github.com/PappyVanPoodle/anode/releases/tag/v2.0.0). The 1.3.0 binaries (`anode.exe`, `zn.exe`, `anode-lsp.exe`, `anodec.exe`) ship in the 1.3.0 zip, and [compiler/](https://github.com/PappyVanPoodle/anode/tree/main/compiler) has their source and build steps. Further reading: [docs/LANGUAGE.md](docs/LANGUAGE.md) (language reference by release) and [docs/SAFETY.md](docs/SAFETY.md) (safety boundary and capability model).

@@ -1,0 +1,36 @@
+// Builds a 200,000-line "label|amount" document (with blank, comment and
+// malformed lines), then counts rows, the amount total and malformed lines.
+struct Stats { rows: int, total: int, errors: int }
+fn document(count: int) -> text {
+    let mut lines = texts();
+    for i in 0..count {
+        if i % 17 == 0 { push(lines, "# comment"); }
+        else if i % 13 == 0 { push(lines, ""); }
+        else if i % 10 == 0 { push(lines, "bad line"); }
+        else { push(lines, concat(concat("item", int_text(i)), concat("|", int_text(i * 7 % 1000)))); }
+    }
+    return text_join(lines, "\n");
+}
+fn scan(src: &text) -> Stats {
+    let mut s = Stats { rows: 0, total: 0, errors: 0 };
+    let n = len(src); let mut start = 0;
+    for i in 0..n + 1 {
+        if i == n || byte_at(src, i) == 10 {
+            if i > start && byte_at(src, start) != 35 {
+                let mut bar = 0 - 1;
+                for j in start..i { if byte_at(src, j) == 124 { bar = j; break; } }
+                if bar > start {
+                    let digits = slice(src, bar + 1, i);
+                    if is_int(digits) { s.rows = s.rows + 1; s.total = s.total + parse_int(digits); } else { s.errors = s.errors + 1; }
+                } else { s.errors = s.errors + 1; }
+            }
+            start = i + 1;
+        }
+    }
+    return s;
+}
+fn main() {
+    let src = document(200000);
+    let stats = scan(&src);
+    print stats.rows; print stats.total; print stats.errors;
+}

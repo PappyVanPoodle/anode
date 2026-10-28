@@ -1,0 +1,7 @@
+# Build outputs written by measure.js
+*.exe
+*.c
+*.obj
+*.pdb
+*.rmeta
+*.build

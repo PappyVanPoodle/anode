@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="904" viewBox="0 0 960 904" role="img" aria-label="Anode 2.0 compared with Rust 1.99 on four programs">
+<rect width="100%" height="100%" rx="14" fill="#15191c"/>
+<text x="24" y="44" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="#eef1f3">Anode 2.0 vs Rust 1.99</text>
+<text x="24" y="70" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="13.5" fill="#95a2ad">Four matching programs, identical output. Windows 11, Intel Core Ultra 9 386H. Medians; lower is better.</text>
+<rect x="726" y="34" width="12" height="12" rx="2" fill="#e94218"/><text x="744" y="45" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="13" fill="#eef1f3">Anode 2.0</text>
+<rect x="826" y="34" width="12" height="12" rx="2" fill="#5d6f80"/><text x="844" y="45" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="13" fill="#eef1f3">Rust 1.99</text>
+<rect x="24" y="92" width="448" height="252" rx="10" fill="#1c2124" stroke="#2d353b"/>
+<text x="42" y="122" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="16" font-weight="700" fill="#eef1f3">Type-check</text>
+<text x="454" y="122" text-anchor="end" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="13.5" font-weight="700" fill="#e94218">Anode 2.7× faster</text>
+<text x="42" y="163" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Line scanner</text>
+<rect x="146" y="144" width="83.7" height="15" rx="3" fill="#e94218"/>
+<text x="236.7" y="156" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">26.4 ms</text>
+<rect x="146" y="163" width="238.0" height="15" rx="3" fill="#5d6f80"/>
+<text x="391.0" y="175" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">75.2 ms</text>
+<text x="42" y="211" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Prime sieve</text>
+<rect x="146" y="192" width="85.7" height="15" rx="3" fill="#e94218"/>
+<text x="238.7" y="204" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">27.1 ms</text>
+<rect x="146" y="211" width="231.5" height="15" rx="3" fill="#5d6f80"/>
+<text x="384.5" y="223" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">73.1 ms</text>
+<text x="42" y="259" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Word count</text>
+<rect x="146" y="240" width="86.4" height="15" rx="3" fill="#e94218"/>
+<text x="239.4" y="252" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">27.3 ms</text>
+<rect x="146" y="259" width="229.3" height="15" rx="3" fill="#5d6f80"/>
+<text x="382.3" y="271" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">72.4 ms</text>
+<text x="42" y="307" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Recursion</text>
+<rect x="146" y="288" width="81.0" height="15" rx="3" fill="#e94218"/>
+<text x="234.0" y="300" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">25.6 ms</text>
+<rect x="146" y="307" width="210.8" height="15" rx="3" fill="#5d6f80"/>
+<text x="363.8" y="319" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">66.6 ms</text>
+<rect x="488" y="92" width="448" height="252" rx="10" fill="#1c2124" stroke="#2d353b"/>
+<text x="506" y="122" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="16" font-weight="700" fill="#eef1f3">Debug build</text>
+<text x="918" y="122" text-anchor="end" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="13.5" font-weight="700" fill="#8a9aa9">Rust 1.8× faster</text>
+<text x="506" y="163" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Line scanner</text>
+<rect x="610" y="144" width="238.0" height="15" rx="3" fill="#e94218"/>
+<text x="855.0" y="156" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">313 ms</text>
+<rect x="610" y="163" width="140.2" height="15" rx="3" fill="#5d6f80"/>
+<text x="757.2" y="175" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">184 ms</text>
+<text x="506" y="211" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Prime sieve</text>
+<rect x="610" y="192" width="229.4" height="15" rx="3" fill="#e94218"/>
+<text x="846.4" y="204" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">301 ms</text>
+<rect x="610" y="211" width="121.9" height="15" rx="3" fill="#5d6f80"/>
+<text x="738.9" y="223" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">160 ms</text>
+<text x="506" y="259" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Word count</text>
+<rect x="610" y="240" width="228.3" height="15" rx="3" fill="#e94218"/>
+<text x="845.3" y="252" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">300 ms</text>
+<rect x="610" y="259" width="148.9" height="15" rx="3" fill="#5d6f80"/>
+<text x="765.9" y="271" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">196 ms</text>
+<text x="506" y="307" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Recursion</text>
+<rect x="610" y="288" width="228.3" height="15" rx="3" fill="#e94218"/>
+<text x="845.3" y="300" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">300 ms</text>
+<rect x="610" y="307" width="114.3" height="15" rx="3" fill="#5d6f80"/>
+<text x="731.3" y="319" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">150 ms</text>
+<rect x="24" y="360" width="448" height="252" rx="10" fill="#1c2124" stroke="#2d353b"/>
+<text x="42" y="390" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="16" font-weight="700" fill="#eef1f3">Release build</text>
+<text x="454" y="390" text-anchor="end" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="13.5" font-weight="700" fill="#8a9aa9">Rust 3.0× faster</text>
+<text x="42" y="431" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Line scanner</text>
+<rect x="146" y="412" width="238.0" height="15" rx="3" fill="#e94218"/>
+<text x="391.0" y="424" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">883 ms</text>
+<rect x="146" y="431" width="65.7" height="15" rx="3" fill="#5d6f80"/>
+<text x="218.7" y="443" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">244 ms</text>
+<text x="42" y="479" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Prime sieve</text>
+<rect x="146" y="460" width="194.8" height="15" rx="3" fill="#e94218"/>
+<text x="347.8" y="472" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">722 ms</text>
+<rect x="146" y="479" width="49.0" height="15" rx="3" fill="#5d6f80"/>
+<text x="202.0" y="491" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">182 ms</text>
+<text x="42" y="527" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Word count</text>
+<rect x="146" y="508" width="202.4" height="15" rx="3" fill="#e94218"/>
+<text x="355.4" y="520" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">750 ms</text>
+<rect x="146" y="527" width="84.2" height="15" rx="3" fill="#5d6f80"/>
+<text x="237.2" y="539" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">312 ms</text>
+<text x="42" y="575" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Recursion</text>
+<rect x="146" y="556" width="106.1" height="15" rx="3" fill="#e94218"/>
+<text x="259.1" y="568" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">393 ms</text>
+<rect x="146" y="575" width="43.4" height="15" rx="3" fill="#5d6f80"/>
+<text x="196.4" y="587" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">161 ms</text>
+<rect x="488" y="360" width="448" height="252" rx="10" fill="#1c2124" stroke="#2d353b"/>
+<text x="506" y="390" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="16" font-weight="700" fill="#eef1f3">Runtime (release build)</text>
+<text x="918" y="390" text-anchor="end" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="13.5" font-weight="700" fill="#8a9aa9">Rust 7.7× faster</text>
+<text x="506" y="431" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Line scanner</text>
+<rect x="610" y="412" width="140.1" height="15" rx="3" fill="#e94218"/>
+<text x="757.1" y="424" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">453 ms</text>
+<rect x="610" y="431" width="14.3" height="15" rx="3" fill="#5d6f80"/>
+<text x="631.3" y="443" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">46.4 ms</text>
+<text x="506" y="479" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Prime sieve</text>
+<rect x="610" y="460" width="238.0" height="15" rx="3" fill="#e94218"/>
+<text x="855.0" y="472" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">769 ms</text>
+<rect x="610" y="479" width="13.0" height="15" rx="3" fill="#5d6f80"/>
+<text x="630.0" y="491" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">42.0 ms</text>
+<text x="506" y="527" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Word count</text>
+<rect x="610" y="508" width="36.8" height="15" rx="3" fill="#e94218"/>
+<text x="653.8" y="520" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">119 ms</text>
+<rect x="610" y="527" width="16.3" height="15" rx="3" fill="#5d6f80"/>
+<text x="633.3" y="539" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">52.5 ms</text>
+<text x="506" y="575" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Recursion</text>
+<rect x="610" y="556" width="66.6" height="15" rx="3" fill="#e94218"/>
+<text x="683.6" y="568" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">215 ms</text>
+<rect x="610" y="575" width="7.8" height="15" rx="3" fill="#5d6f80"/>
+<text x="624.8" y="587" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">25.2 ms</text>
+<rect x="24" y="628" width="448" height="252" rx="10" fill="#1c2124" stroke="#2d353b"/>
+<text x="42" y="658" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="16" font-weight="700" fill="#eef1f3">Executable size</text>
+<text x="454" y="658" text-anchor="end" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="13.5" font-weight="700" fill="#e94218">Anode 2.8× smaller</text>
+<text x="42" y="699" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Line scanner</text>
+<rect x="146" y="680" width="122.6" height="15" rx="3" fill="#e94218"/>
+<text x="275.6" y="692" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">69 KB</text>
+<rect x="146" y="699" width="236.2" height="15" rx="3" fill="#5d6f80"/>
+<text x="389.2" y="711" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">132 KB</text>
+<text x="42" y="747" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Prime sieve</text>
+<rect x="146" y="728" width="100.2" height="15" rx="3" fill="#e94218"/>
+<text x="253.2" y="740" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">56 KB</text>
+<rect x="146" y="747" width="230.8" height="15" rx="3" fill="#5d6f80"/>
+<text x="383.8" y="759" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">129 KB</text>
+<text x="42" y="795" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Word count</text>
+<rect x="146" y="776" width="103.8" height="15" rx="3" fill="#e94218"/>
+<text x="256.8" y="788" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">58 KB</text>
+<rect x="146" y="795" width="238.0" height="15" rx="3" fill="#5d6f80"/>
+<text x="391.0" y="807" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">133 KB</text>
+<text x="42" y="843" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Recursion</text>
+<rect x="146" y="824" width="36.7" height="15" rx="3" fill="#e94218"/>
+<text x="189.7" y="836" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#eef1f3">21 KB</text>
+<rect x="146" y="843" width="229.1" height="15" rx="3" fill="#5d6f80"/>
+<text x="382.1" y="855" font-family="JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, monospace" font-size="11.5" fill="#8a9aa9">128 KB</text>
+<rect x="488" y="628" width="448" height="252" rx="10" fill="#1c2124" stroke="#2d353b"/>
+<text x="506" y="658" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="16" font-weight="700" fill="#eef1f3">What was measured</text>
+<text x="506" y="690" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="600" fill="#e94218">Type-check</text>
+<text x="616" y="690" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">anodec check vs rustc --emit=metadata</text>
+<text x="506" y="715" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="600" fill="#e94218">Debug build</text>
+<text x="616" y="715" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">anodec build vs rustc (opt-level 0)</text>
+<text x="506" y="740" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="600" fill="#e94218">Release build</text>
+<text x="616" y="740" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">anodec build --release vs rustc -C opt-level=3</text>
+<text x="506" y="765" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="600" fill="#e94218">Runtime</text>
+<text x="616" y="765" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">whole process, the release builds</text>
+<text x="506" y="790" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="600" fill="#e94218">Compilers</text>
+<text x="616" y="790" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">anodec 2.0.0 uses MSVC cl 19.44; rustc 1.99.0</text>
+<text x="506" y="815" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="600" fill="#e94218">Note</text>
+<text x="616" y="815" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Anode checks integer overflow in every build;</text>
+<text x="506" y="840" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="600" fill="#e94218"></text>
+<text x="616" y="840" font-family="IBM Plex Sans, Segoe UI, system-ui, -apple-system, sans-serif" font-size="12.5" fill="#95a2ad">Rust release builds do not.</text>
+</svg>

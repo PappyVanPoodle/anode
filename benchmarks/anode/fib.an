@@ -1,0 +1,3 @@
+// Naive recursive Fibonacci: about 2.7 million calls.
+fn fib(n: int) -> int { if n < 2 { return n; } return fib(n - 1) + fib(n - 2); }
+fn main() { print fib(30); }

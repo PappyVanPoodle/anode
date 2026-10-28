@@ -1,0 +1,19 @@
+// Counts 300,000 words drawn from a 5,000-word vocabulary with a hash map,
+// then reports the vocabulary size, the most frequent count and a checksum.
+map Counts(text, int);
+fn main() {
+    let mut counts = Counts();
+    for i in 0..300000 {
+        let word = concat("w", int_text(i * 7919 % 5000));
+        if contains_key(counts, word) { let seen = clone_get(counts, word); insert(counts, word, seen + 1); }
+        else { insert(counts, word, 1); }
+    }
+    let mut most = 0; let mut checksum = 0;
+    let names = keys(counts);
+    for i in 0..len(names) {
+        let name = text_at(names, i); let seen = clone_get(counts, name);
+        if seen > most { most = seen; }
+        checksum = checksum + seen * len(name);
+    }
+    print len(counts); print most; print checksum;
+}
