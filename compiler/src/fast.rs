@@ -2079,12 +2079,17 @@ impl Writer<'_, '_> {
                 )?;
             }
             "http_request" => {
-                // Same shape as net_request: url and body are borrowed by
-                // address and one `zn_net_result` lands in the destination.
+                // Same shape as net_request: url, body and the optional texts
+                // of header lines are borrowed by address (null when absent),
+                // and one `zn_net_result` lands in the destination.
                 let out = self.address(d);
                 let url = self.address(&args[0]);
                 let body = self.address(&args[1]);
-                self.call("zn_abi_http_request", &[out, url, body], None)?;
+                let headers = match args.get(2) {
+                    Some(headers) => self.address(headers),
+                    None => self.b.ins().iconst(I64, 0),
+                };
+                self.call("zn_abi_http_request", &[out, url, body, headers], None)?;
             }
             _ => return Ok(None),
         }

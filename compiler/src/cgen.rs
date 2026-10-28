@@ -1848,8 +1848,12 @@ impl Writer<'_> {
                 a[0], a[1], a[2]
             )),
             "http_request" if args.len() == 2 => {
-                Some(format!("zn_v130_http_request({},{})", a[0], a[1]))
+                Some(format!("zn_v130_http_request({},{},NULL)", a[0], a[1]))
             }
+            "http_request" if args.len() == 3 => Some(format!(
+                "zn_v130_http_request({},{},&({}))",
+                a[0], a[1], a[2]
+            )),
             _ => None,
         }
     }
@@ -3603,7 +3607,7 @@ fn v130_http_request_wrapper(program: &CheckedProgram) -> String {
         return String::new();
     };
     let c = ty.c();
-    format!("static {c} zn_v130_http_request(zn_text url,zn_text body){{zn_net_result result=zn_http_request(url,body);{c} out={{0}};_Static_assert(sizeof(out)==sizeof(result),\"net result layout\");memcpy(&out,&result,sizeof(out));return out;}}
+    format!("static {c} zn_v130_http_request(zn_text url,zn_text body,const zn_texts* headers){{zn_net_result result=zn_http_request(url,body,headers);{c} out={{0}};_Static_assert(sizeof(out)==sizeof(result),\"net result layout\");memcpy(&out,&result,sizeof(out));return out;}}
 ")
 }
 /// 1.2 B (contract N2): whether any function uses a big-endian wire write.

@@ -82,7 +82,7 @@ const V130_BUILTIN_DETAILS: &[(&str, &str)] = &[
     ("remove_file", "remove_file(path: text/str) -> bool; deletes one file; true when it was deleted; requires file_write; io, no_alloc, bounded"),
     ("net_serve_once", "net_serve_once(endpoint: text/str, status: int, reply_body: text/str) -> NetResult; loopback://serve/<payload> in memory, or accepts one connection on http:// or tcp:// 127.0.0.1 within 5 s, replies, and returns the request body; status 100..599 (0 for tcp://); requires the net capability; io, allocating, never bounded"),
     ("keys", "keys(m) -> texts or ints; a new collection of the keys of a map whose key type is text (texts) or int (ints), in unspecified order; the map is borrowed, not consumed; allocating, no_io, bounded; rejected inside contracts"),
-    ("http_request", "http_request(url: text/str, body: text/str) -> NetResult; GET when body is empty, POST otherwise, to an http:// or https:// URL through WinHTTP (loopback:// goes to net_request); 16 MiB limit each way, strict UTF-8 response, 30 s timeouts; requires the net capability (default false); io, allocating, never bounded"),
+    ("http_request", "http_request(url: text/str, body: text/str[, headers: texts]) -> NetResult; GET when body is empty, POST otherwise; optional headers are \"Name: value\" lines (printable ASCII, no Host, Content-Length, Transfer-Encoding or Connection, at most 64 and 64 KiB), checked before any I/O; to an http:// or https:// URL through WinHTTP (loopback:// goes to net_request); 16 MiB limit each way, strict UTF-8 response, 30 s timeouts; requires the net capability (default false); io, allocating, never bounded"),
 ];
 
 /// Names of the networking prelude types (registered after user types).

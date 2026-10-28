@@ -1,0 +1,4 @@
+# The compiler embeds runtime.h in the C it emits, so keep the runtime's
+# Windows line endings on every checkout.
+compiler/src/runtime.h text eol=crlf
+compiler/src/runtime.c text eol=crlf

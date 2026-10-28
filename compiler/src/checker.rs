@@ -1451,10 +1451,10 @@ impl Checker<'_> {
                     "http_request requires the net capability (default false)",
                 ));
             }
-            if self.contract || args.len() != 2 {
+            if self.contract || !(2..=3).contains(&args.len()) {
                 return Err(Error::new(
                     line,
-                    "http_request requires a url and a body outside contracts",
+                    "http_request requires a url, a body and optional headers outside contracts",
                 ));
             }
             let saved = self.borrows.clone();
@@ -1464,21 +1464,42 @@ impl Checker<'_> {
             {
                 return Err(Error::new(line, "http_request url and body require text or str"));
             }
+            // Optional "Name: value" lines, borrowed for the call.
+            let headers = match args.get(2) {
+                Some(arg) => {
+                    let headers = self.view(arg)?;
+                    if headers.place.ty != Type::Texts {
+                        return Err(Error::new(
+                            line,
+                            "http_request headers require texts of \"Name: value\" lines",
+                        ));
+                    }
+                    Some(headers)
+                }
+                None => None,
+            };
             let result_type = self.types.net_result().ok_or_else(|| {
                 Error::new(
                     line,
                     "net results require the exact NetResponse/NetResult prelude layout",
                 )
             })?;
+            let mut places = vec![url.place.clone(), body.place.clone()];
+            if let Some(headers) = &headers {
+                places.push(headers.place.clone());
+            }
             let result = self.temp(
                 result_type,
                 Rvalue::Builtin {
                     name: n.into(),
-                    args: vec![url.place.clone(), body.place.clone()],
+                    args: places,
                 },
             );
             self.drop_value(&url);
             self.drop_value(&body);
+            if let Some(headers) = &headers {
+                self.drop_value(headers);
+            }
             self.borrows = saved;
             return Ok(result);
         }

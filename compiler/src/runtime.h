@@ -312,7 +312,7 @@ zn_texts zn_map_keys_text(const zn_map* m, uint64_t width);
 zn_ints zn_map_keys_int(const zn_map* m, uint64_t width);
 void zn_abi_map_keys_text(zn_texts* out, const zn_map* m, uint64_t width);
 void zn_abi_map_keys_int(zn_ints* out, const zn_map* m, uint64_t width);
-zn_net_result zn_http_request(zn_text url, zn_text body);
-void zn_abi_http_request(void* out, const zn_text* url, const zn_text* body);
+zn_net_result zn_http_request(zn_text url, zn_text body, const zn_texts* headers);
+void zn_abi_http_request(void* out, const zn_text* url, const zn_text* body, const zn_texts* headers);
 /* zn-v130-end */
 #endif

@@ -42,8 +42,15 @@ A spawned server and an in-program client work together: `let s = spawn serve(..
 
 **Map keys.** `keys(m)` returns a new collection of the keys of a map whose key type is `text` (as `texts`) or `int` (as `ints`). Text keys are copied. The map is only borrowed and stays usable. The order is the map's internal slot order: unspecified, though it does not change while the map is unchanged. Other key types report "keys requires a map with text or int keys". `keys` allocates, so contracts and `@effect(no_alloc)` reject it; it is `no_io` and `bounded`. Like `contains_key`, it is a contextual name: a user function called `keys` keeps its meaning.
 
-**External HTTP.** `http_request(url, body) -> NetResult` sends one request to an `http://` or `https://` URL through Windows WinHTTP, using the system proxy settings. `net_request` is unchanged and still reaches only loopback endpoints.
-- It sends `GET` when `body` is empty and `POST` otherwise. A non-empty body goes out as `application/json` when its first non-space character is `{` or `[`, else as `text/plain; charset=utf-8`. No other headers can be set.
+**External HTTP.** `http_request(url, body) -> NetResult` and `http_request(url, body, headers) -> NetResult` send one request to an `http://` or `https://` URL through Windows WinHTTP, using the system proxy settings. `net_request` is unchanged and still reaches only loopback endpoints.
+- It sends `GET` when `body` is empty and `POST` otherwise. A non-empty body goes out as `application/json` when its first non-space character is `{` or `[`, else as `text/plain; charset=utf-8`.
+- `headers` is an optional `texts` with one `Name: value` per entry, for example `Authorization: Bearer <token>`. It is borrowed, not consumed. A `Content-Type` header replaces the automatic one.
+- Headers are checked before any network activity:
+  - the name must be a token (letters, digits or ``!#$%&'*+-.^_`|~``);
+  - the value must be printable ASCII or tabs, with no line breaks, so nothing can be injected;
+  - `Host`, `Content-Length`, `Transfer-Encoding` and `Connection` are rejected because WinHTTP sets them;
+  - there may be at most 64 headers and 64 KiB in total.
+- Header error messages give the header's position, never its value, so a token does not end up in an error text. Headers are checked, then ignored, for `loopback://` URLs.
 - `loopback://` URLs are passed to `net_request`.
 - The URL is checked before any network activity. The host must be ASCII (use punycode for international names; IPv6 goes in brackets), the port 1–65535, and the path and query printable ASCII without spaces (percent-encode anything else). User info (`user@host`) is rejected; a `#fragment` is dropped.
 - The request and the response are each limited to 16 MiB, and the response must be strict UTF-8 without NUL. Timeouts are 10 s to resolve, 10 s to connect, and 30 s each to send and receive.

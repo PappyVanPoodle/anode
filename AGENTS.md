@@ -361,9 +361,18 @@ enum NetResult { Response(NetResponse), Error(text) }
 - **Server (`net_serve_once(endpoint, status, reply_body) -> NetResult`, `v1.3.0`):**
   - In-memory route: `loopback://serve/<request_payload>` -> returns `Response(NetResponse { status, body: "<request_payload>" })`.
   - Socket routes: `http://127.0.0.1:<port>/<path>` (binds, accepts 1 HTTP request, replies with `status` + `reply_body`, returns request body in `Response.body`) and `tcp://127.0.0.1:<port>` (`status == 0`).
-- **External HTTP(S) (`http_request(url, body) -> NetResult`, also requires `net = true`):**
+- **External HTTP(S) (`http_request(url, body[, headers]) -> NetResult`, also requires `net = true`):**
   - Any `http://` or `https://` host, through Windows WinHTTP with the system proxy settings. `net_request` above still reaches only loopback endpoints.
-  - `GET` when `body` is empty, `POST` otherwise. A body whose first non-space character is `{` or `[` is sent as `application/json`, anything else as `text/plain; charset=utf-8`. Custom headers are not supported.
+  - `GET` when `body` is empty, `POST` otherwise. A body whose first non-space character is `{` or `[` is sent as `application/json`, anything else as `text/plain; charset=utf-8`.
+  - Optional `headers: texts`, one `Name: value` per entry, borrowed. A `Content-Type` entry replaces the automatic one. Names must be tokens, values printable ASCII without line breaks; `Host`, `Content-Length`, `Transfer-Encoding` and `Connection` are rejected; at most 64 headers and 64 KiB. Errors give the header's position, never its value.
+    ```anode
+    let mut headers = texts();
+    push(headers, concat("Authorization: Bearer ", env_var("API_KEY"))); // env_var needs process_args = true
+    match http_request(url, body, headers) {
+        NetResult::Response(r) => { print r.status; }
+        NetResult::Error(e) => { print e; }
+    }
+    ```
   - The URL is checked before any I/O: ASCII host (punycode for international names, IPv6 in brackets), port 1–65535, printable-ASCII path and query (percent-encode anything else), no `user@host`. `loopback://` URLs are passed to `net_request`.
   - Request and response are limited to 16 MiB each; the response must be UTF-8 without NUL. Timeouts: 10 s resolve, 10 s connect, 30 s send, 30 s receive. Failures are `Error` values starting with `http_request`.
 

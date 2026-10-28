@@ -2466,7 +2466,8 @@ void zn_abi_map_keys_int(zn_ints* out,const zn_map* m,uint64_t width){*out=zn_ma
    avoids winhttp.h for the same reason the Winsock code avoids winsock2.h.
    The URL is parsed and checked before any I/O: ASCII host (IPv6 in brackets),
    optional port 1-65535, printable-ASCII path and query, no user info; a
-   fragment is dropped. A non-empty body is sent as application/json when its
+   fragment is dropped. Unless a Content-Type header is given, a non-empty body
+   is sent as application/json when its
    first non-space byte is { or [, else as text/plain; charset=utf-8. Request
    and response are limited to 16 MiB; the response must be strict UTF-8
    without NUL. Timeouts: 10 s resolve, 10 s connect, 30 s send, 30 s receive. */
@@ -2517,12 +2518,58 @@ static wchar_t* zn_http_wide(const char* s,size_t n) {
 static bool zn_http_host_byte(unsigned char c) {
     return (c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || c=='-' || c=='.' || c=='_';
 }
-zn_net_result zn_http_request(zn_text url,zn_text body) {
+/* RFC 9110 token characters, the only bytes allowed in a header name. */
+static bool zn_http_token_byte(unsigned char c) {
+    return (c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || (c && strchr("!#$%&'*+-.^_`|~",c));
+}
+static bool zn_http_name_is(const char* name,size_t n,const char* expected) {
+    return n==strlen(expected) && !_strnicmp(name,expected,n);
+}
+/* Optional request headers, one "Name: value" per entry. Checked before any
+   I/O: a token name, a colon, and a value of printable ASCII or tabs (no line
+   breaks, so nothing can be injected). Host, Content-Length, Transfer-Encoding
+   and Connection are managed by WinHTTP and rejected. At most 64 entries and
+   64 KiB. Messages name the entry's position, never its value, so secrets such
+   as an Authorization token do not leak into errors. */
+#define ZN_HTTP_MAX_HEADERS 64u
+static const char* zn_http_check_headers(const zn_texts* headers,char* message,size_t room,bool* content_type,size_t* bytes) {
+    *content_type=false;*bytes=0;
+    uint64_t count=headers?headers->len:0;
+    if(count>ZN_HTTP_MAX_HEADERS)return "http_request accepts at most 64 headers";
+    for(uint64_t h=0;h<count;h++) {
+        zn_text line=headers->data[h];size_t n=zn_text_size(line);const char* p=line.data;
+        size_t colon=0;while(colon<n && zn_http_token_byte((unsigned char)p[colon]))colon++;
+        unsigned long long index=(unsigned long long)h+1;
+        if(colon==0 || colon>=n || p[colon]!=':') {
+            snprintf(message,room,"http_request header %llu must be 'Name: value' with a name made of letters, digits or !#$%%&'*+-.^_`|~",index);
+            return message;
+        }
+        for(size_t i=colon+1;i<n;i++){unsigned char c=(unsigned char)p[i];
+            if(c!='\t' && (c<0x20u || c>0x7Eu)) {
+                snprintf(message,room,"http_request header %llu value must be printable ASCII without line breaks",index);
+                return message;
+            }}
+        if(zn_http_name_is(p,colon,"host") || zn_http_name_is(p,colon,"content-length")
+            || zn_http_name_is(p,colon,"transfer-encoding") || zn_http_name_is(p,colon,"connection")) {
+            snprintf(message,room,"http_request header %llu: Host, Content-Length, Transfer-Encoding and Connection are set by http_request",index);
+            return message;
+        }
+        if(zn_http_name_is(p,colon,"content-type"))*content_type=true;
+        *bytes+=n+2;
+        if(*bytes>ZN_NET_HEADER_LIMIT)return "http_request headers are limited to 64 KiB";
+    }
+    return NULL;
+}
+zn_net_result zn_http_request(zn_text url,zn_text body,const zn_texts* extra) {
     size_t un=zn_text_size(url),bn=zn_text_size(body);const char* u=url.data;
     if(un>ZN_NET_LIMIT || (un && (!u || memchr(u,0,un))))
         return zn_net_error("http_request url must be at most 16 MiB without NUL bytes",NULL,0);
     if(bn>ZN_NET_LIMIT || (bn && (!body.data || memchr(body.data,0,bn))))
         return zn_net_error("http_request body must be at most 16 MiB without NUL bytes",NULL,0);
+    char header_message[200];bool custom_type;size_t header_bytes;
+    const char* header_error=zn_http_check_headers(extra,header_message,sizeof(header_message),&custom_type,&header_bytes);
+    if(header_error)return zn_net_error(header_error,NULL,0);
+    /* loopback:// has no headers; they are checked above and then ignored. */
     if(un>=11 && !memcmp(u,"loopback://",11))return zn_net_request(url,body);
     bool secure;size_t at;
     if(un>=8 && !_strnicmp(u,"https://",8)){secure=true;at=8;}
@@ -2574,7 +2621,18 @@ zn_net_result zn_http_request(zn_text url,zn_text body) {
     const char* json_or_text="Content-Type: text/plain; charset=utf-8\r\n";
     for(size_t i=0;i<bn;i++){char c=body.data[i];if(c==' ' || c=='\t' || c=='\r' || c=='\n')continue;
         if(c=='{' || c=='[')json_or_text="Content-Type: application/json\r\n";break;}
-    wchar_t* headers=bn?zn_http_wide(json_or_text,strlen(json_or_text)):NULL;
+    /* The caller's headers, then the automatic Content-Type unless one was given. */
+    size_t auto_len=(bn && !custom_type)?strlen(json_or_text):0;
+    size_t block_len=header_bytes+auto_len,written=0;
+    char* block=(char*)zn_alloc(block_len+1);
+    for(uint64_t h=0;extra && h<extra->len;h++) {
+        size_t n=zn_text_size(extra->data[h]);
+        memcpy(block+written,extra->data[h].data,n);written+=n;
+        block[written++]='\r';block[written++]='\n';
+    }
+    if(auto_len){memcpy(block+written,json_or_text,auto_len);written+=auto_len;}
+    wchar_t* headers=block_len?zn_http_wide(block,block_len):NULL;
+    free(block);
     const char* error=NULL;DWORD code=0;char* data=NULL;size_t size=0;DWORD status=0;
     zn_http_handle session=NULL,connection=NULL,request=NULL;
     session=zn_http.open(L"Anode/1.3",ZN_HTTP_ACCESS_TYPE_AUTOMATIC_PROXY,NULL,NULL,0);
@@ -2615,8 +2673,8 @@ done:
     zn_text text={data,size};
     return zn_net_ok((int64_t)status,text);
 }
-void zn_abi_http_request(void* out,const zn_text* url,const zn_text* body) {
-    zn_net_result result=zn_http_request(*url,*body);memcpy(out,&result,sizeof(result));
+void zn_abi_http_request(void* out,const zn_text* url,const zn_text* body,const zn_texts* headers) {
+    zn_net_result result=zn_http_request(*url,*body,headers);memcpy(out,&result,sizeof(result));
 }
 #if defined(_MSC_VER)
 #pragma optimize("t", on)

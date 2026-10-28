@@ -10,7 +10,7 @@ Anode is a compiled systems language for Windows x64. Source files use the `.an`
 - A function can list the struct fields it may use (`&mut Counter.{ mut value, step }`), declare effects it must not have (`@effect(no_alloc, no_io, bounded)`), and state `requires` / `ensures` conditions. The compiler checks all three.
 - Arithmetic, array bounds and number conversions are checked in every build mode.
 - `anode run` builds with Cranelift. `anode build --release` generates C and compiles it with MSVC.
-- Programs can call `http://` and `https://` endpoints with `http_request(url, body)` when `net = true` is set in `Anode.toml`, and list a map's keys with `keys(m)`. A source file may be up to 16 MiB and a project up to 256 MiB.
+- Programs can call `http://` and `https://` endpoints with `http_request(url, body)`, or `http_request(url, body, headers)` to send headers such as `Authorization`, when `net = true` is set in `Anode.toml`. `keys(m)` lists a map's keys. A source file may be up to 16 MiB and a project up to 256 MiB.
 
 Version **1.3.0** · MIT License · [Download](https://github.com/PappyVanPoodle/anode/releases/latest) · [Language guide](AGENTS.md) · [Standard library API](docs/API-DOCS.md) · [Compiler source](https://github.com/PappyVanPoodle/anode/tree/main/compiler)
 
